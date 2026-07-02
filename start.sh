@@ -1,0 +1,1 @@
+python3 /Users/jacob/Claude/ClaudeCode/MusicSearch/app.py

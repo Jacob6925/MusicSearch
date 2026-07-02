@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Music Search</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Music Search</h1>
+            <p class="subtitle">Search Apple Music &amp; Spotify</p>
+        </header>
+
+        <div class="search-section">
+            <form id="search-form">
+                <div class="search-bar">
+                    <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+                    </svg>
+                    <input type="text" id="search-input" placeholder="Search for songs or artists..." autocomplete="off">
+                    <button type="submit" id="search-btn">Search</button>
+                </div>
+            </form>
+
+            <div class="platform-toggle">
+                <button class="platform-btn active" data-platform="both">
+                    <span class="dot both"></span> Both
+                </button>
+                <button class="platform-btn" data-platform="apple">
+                    <span class="dot apple"></span> Apple Music
+                </button>
+                <button class="platform-btn" data-platform="spotify">
+                    <span class="dot spotify"></span> Spotify
+                </button>
+            </div>
+        </div>
+
+        <div class="playlist-section">
+            <button id="paste-playlist-btn" class="paste-playlist-btn">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                Paste Playlist Link
+            </button>
+            <div id="playlist-url-area" class="playlist-url-area hidden">
+                <div class="playlist-input-row">
+                    <input type="text" id="playlist-url-input" placeholder="Paste Apple Music or Spotify playlist URL…" autocomplete="off" spellcheck="false">
+                    <button id="playlist-dl-btn" class="playlist-dl-btn" disabled>Download</button>
+                </div>
+                <div id="playlist-validation" class="playlist-validation"></div>
+            </div>
+            <div id="playlist-status-area" class="playlist-status-area hidden">
+                <span id="playlist-status-text"></span>
+            </div>
+        </div>
+
+        <div id="status-banner" class="status-banner hidden"></div>
+        <div id="loading" class="loading hidden">
+            <div class="spinner"></div>
+            <span>Searching...</span>
+        </div>
+        <div id="error-msg" class="error-msg hidden"></div>
+        <div id="results-info" class="results-info hidden"></div>
+        <table id="results" class="results-table hidden">
+            <thead>
+                <tr>
+                    <th class="col-num">#</th>
+                    <th class="col-art"></th>
+                    <th class="col-title">Title</th>
+                    <th class="col-artist">Artist</th>
+                    <th class="col-album">Album</th>
+                    <th class="col-dur">Time</th>
+                    <th class="col-year">Year</th>
+                    <th class="col-src">Source</th>
+                    <th class="col-dl"></th>
+                </tr>
+            </thead>
+            <tbody id="results-body"></tbody>
+        </table>
+        <div id="empty-state" class="empty-state">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="empty-icon">
+                <path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>
+            </svg>
+            <p>Enter a song title or artist name to get started</p>
+        </div>
+    </div>
+
+    <audio id="audio-player" preload="none"></audio>
+
+    <script>
+        const searchForm = document.getElementById('search-form');
+        const searchInput = document.getElementById('search-input');
+        const resultsDiv = document.getElementById('results');
+        const loadingDiv = document.getElementById('loading');
+        const errorDiv = document.getElementById('error-msg');
+        const emptyState = document.getElementById('empty-state');
+        const resultsInfo = document.getElementById('results-info');
+        const statusBanner = document.getElementById('status-banner');
+        const audioPlayer = document.getElementById('audio-player');
+
+        let currentPlatform = 'both';
+        let currentlyPlaying = null;
+        let lastResults = [];
+
+        document.querySelectorAll('.platform-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.platform-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                currentPlatform = btn.dataset.platform;
+            });
+        });
+
+        fetch('/api/status')
+            .then(r => r.json())
+            .then(status => {
+                if (!status.spotify) {
+                    statusBanner.textContent = 'Spotify is not configured. Set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET environment variables to enable Spotify search.';
+                    statusBanner.classList.remove('hidden');
+                }
+            });
+
+        searchForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const query = searchInput.value.trim();
+            if (!query) return;
+
+            loadingDiv.classList.remove('hidden');
+            errorDiv.classList.add('hidden');
+            resultsInfo.classList.add('hidden');
+            emptyState.classList.add('hidden');
+            resultsDiv.classList.add('hidden');
+            document.getElementById('results-body').innerHTML = '';
+            stopAudio();
+
+            try {
+                const resp = await fetch(`/api/search?q=${encodeURIComponent(query)}&platform=${currentPlatform}`);
+                const data = await resp.json();
+
+                if (data.errors && data.errors.length > 0) {
+                    errorDiv.textContent = data.errors.join(' | ');
+                    errorDiv.classList.remove('hidden');
+                }
+
+                if (data.results.length === 0) {
+                    emptyState.querySelector('p').textContent = 'No results found. Try a different search.';
+                    emptyState.classList.remove('hidden');
+                } else {
+                    const appleCount = data.results.filter(r => r.platform === 'apple').length;
+                    const spotifyCount = data.results.filter(r => r.platform === 'spotify').length;
+                    let info = `${data.results.length} results`;
+                    if (currentPlatform === 'both') {
+                        const parts = [];
+                        if (appleCount) parts.push(`${appleCount} Apple Music`);
+                        if (spotifyCount) parts.push(`${spotifyCount} Spotify`);
+                        info += ` (${parts.join(', ')})`;
+                    }
+                    resultsInfo.textContent = info;
+                    resultsInfo.classList.remove('hidden');
+                    renderResults(data.results);
+                }
+            } catch (err) {
+                errorDiv.textContent = 'Failed to fetch results. Is the server running?';
+                errorDiv.classList.remove('hidden');
+            } finally {
+                loadingDiv.classList.add('hidden');
+            }
+        });
+
+        function formatDuration(ms) {
+            if (!ms) return '';
+            const mins = Math.floor(ms / 60000);
+            const secs = Math.floor((ms % 60000) / 1000);
+            return `${mins}:${secs.toString().padStart(2, '0')}`;
+        }
+
+        function renderResults(results) {
+            lastResults = results;
+            resultsDiv.classList.remove('hidden');
+            const tbody = document.getElementById('results-body');
+            tbody.innerHTML = results.map((r, i) => `
+                <tr class="result-row ${r.platform}">
+                    <td class="col-num">${i + 1}</td>
+                    <td class="col-art">
+                        <div class="art-wrap">
+                            ${r.artwork ? `<img src="${r.artwork}" alt="" loading="lazy">` : ''}
+                            ${r.preview_url ? `<button class="play-btn" data-url="${r.preview_url}" onclick="togglePlay(this)">
+                                <svg class="play-icon" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
+                                <svg class="pause-icon hidden" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+                            </button>` : ''}
+                        </div>
+                    </td>
+                    <td class="col-title" title="${r.title}">${r.title}${r.explicit ? ' <span class="explicit-badge">E</span>' : ''}</td>
+                    <td class="col-artist" title="${r.artist}">${r.artist}</td>
+                    <td class="col-album" title="${r.album}">${r.album}</td>
+                    <td class="col-dur">${formatDuration(r.duration_ms)}</td>
+                    <td class="col-year">${r.release_date ? r.release_date.substring(0, 4) : ''}</td>
+                    <td class="col-src"><span class="platform-badge ${r.platform}">${r.platform === 'apple' ? 'Apple' : 'Spotify'}</span></td>
+                    <td class="col-dl"><button class="dl-btn" onclick="startDownload(this, ${i})" data-index="${i}" title="Download">
+                        <svg class="dl-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    </button></td>
+                </tr>
+            `).join('');
+        }
+
+        function togglePlay(btn) {
+            const url = btn.dataset.url;
+            const playIcon = btn.querySelector('.play-icon');
+            const pauseIcon = btn.querySelector('.pause-icon');
+
+            if (currentlyPlaying === btn) {
+                audioPlayer.pause();
+                playIcon.classList.remove('hidden');
+                pauseIcon.classList.add('hidden');
+                currentlyPlaying = null;
+                return;
+            }
+
+            if (currentlyPlaying) {
+                const prevPlay = currentlyPlaying.querySelector('.play-icon');
+                const prevPause = currentlyPlaying.querySelector('.pause-icon');
+                prevPlay.classList.remove('hidden');
+                prevPause.classList.add('hidden');
+            }
+
+            audioPlayer.src = url;
+            audioPlayer.play();
+            playIcon.classList.add('hidden');
+            pauseIcon.classList.remove('hidden');
+            currentlyPlaying = btn;
+        }
+
+        function stopAudio() {
+            audioPlayer.pause();
+            audioPlayer.src = '';
+            if (currentlyPlaying) {
+                const prevPlay = currentlyPlaying.querySelector('.play-icon');
+                const prevPause = currentlyPlaying.querySelector('.pause-icon');
+                if (prevPlay) prevPlay.classList.remove('hidden');
+                if (prevPause) prevPause.classList.add('hidden');
+            }
+            currentlyPlaying = null;
+        }
+
+        audioPlayer.addEventListener('ended', () => {
+            if (currentlyPlaying) {
+                const playIcon = currentlyPlaying.querySelector('.play-icon');
+                const pauseIcon = currentlyPlaying.querySelector('.pause-icon');
+                playIcon.classList.remove('hidden');
+                pauseIcon.classList.add('hidden');
+                currentlyPlaying = null;
+            }
+        });
+
+        async function startDownload(btn, index) {
+            const track = lastResults[index];
+            if (!track) return;
+
+            btn.disabled = true;
+            btn.classList.add('downloading');
+            btn.innerHTML = '<div class="dl-spinner"></div>';
+
+            try {
+                const resp = await fetch('/api/download', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        platform: track.platform,
+                        title: track.title,
+                        artist: track.artist,
+                        url: track.url,
+                    }),
+                });
+                const data = await resp.json();
+                if (data.error) {
+                    btn.classList.remove('downloading');
+                    btn.classList.add('dl-error');
+                    btn.innerHTML = '!';
+                    btn.title = data.error;
+                    return;
+                }
+                pollDownload(btn, data.download_id);
+            } catch (e) {
+                btn.classList.remove('downloading');
+                btn.classList.add('dl-error');
+                btn.innerHTML = '!';
+                btn.title = 'Request failed';
+            }
+        }
+
+        function pollDownload(btn, downloadId) {
+            const interval = setInterval(async () => {
+                try {
+                    const resp = await fetch(`/api/download/${downloadId}`);
+                    const data = await resp.json();
+                    if (data.log_tail) {
+                        btn.title = data.log_tail.trim().split('\n').pop() || 'Downloading…';
+                    }
+                    if (data.status === 'done') {
+                        clearInterval(interval);
+                        btn.classList.remove('downloading');
+                        btn.classList.add('dl-done');
+                        btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>';
+                        btn.title = 'Downloaded';
+                    } else if (data.status === 'error') {
+                        clearInterval(interval);
+                        btn.classList.remove('downloading');
+                        btn.classList.add('dl-error');
+                        btn.innerHTML = '!';
+                        btn.title = data.error || 'Download failed';
+                        console.error('[Download error]', data);
+                    }
+                } catch (e) {
+                    clearInterval(interval);
+                    btn.classList.remove('downloading');
+                    btn.classList.add('dl-error');
+                    btn.innerHTML = '!';
+                }
+            }, 2000);
+        }
+
+        searchInput.focus();
+
+        // ── Playlist download ─────────────────────────────────────────────
+        const pastePlBtn = document.getElementById('paste-playlist-btn');
+        const playlistUrlArea = document.getElementById('playlist-url-area');
+        const playlistUrlInput = document.getElementById('playlist-url-input');
+        const playlistDlBtn = document.getElementById('playlist-dl-btn');
+        const playlistValidation = document.getElementById('playlist-validation');
+        const playlistStatusArea = document.getElementById('playlist-status-area');
+        const playlistStatusText = document.getElementById('playlist-status-text');
+
+        let playlistInfo = null;
+        let validationTimer = null;
+
+        pastePlBtn.addEventListener('click', async () => {
+            pastePlBtn.classList.add('hidden');
+            playlistUrlArea.classList.remove('hidden');
+            playlistUrlInput.focus();
+            try {
+                const text = await navigator.clipboard.readText();
+                if (text && (text.includes('music.apple.com') || text.includes('open.spotify.com/playlist'))) {
+                    playlistUrlInput.value = text;
+                    validatePlaylistUrl(text);
+                }
+            } catch (_) {}
+        });
+
+        playlistUrlInput.addEventListener('input', () => {
+            clearTimeout(validationTimer);
+            const url = playlistUrlInput.value.trim();
+            if (!url) {
+                setValidation('', '');
+                playlistDlBtn.disabled = true;
+                playlistInfo = null;
+                return;
+            }
+            if (!isPlaylistUrl(url)) {
+                setValidation('error', 'Not a valid Apple Music or Spotify playlist URL');
+                playlistDlBtn.disabled = true;
+                playlistInfo = null;
+                return;
+            }
+            setValidation('loading', 'Fetching playlist info…');
+            validationTimer = setTimeout(() => validatePlaylistUrl(url), 400);
+        });
+
+        function isPlaylistUrl(url) {
+            return /https:\/\/music\.apple\.com\/[^/]+\/playlist\//.test(url)
+                || /https:\/\/open\.spotify\.com\/playlist\//.test(url);
+        }
+
+        async function validatePlaylistUrl(url) {
+            setValidation('loading', 'Fetching playlist info…');
+            playlistDlBtn.disabled = true;
+            playlistInfo = null;
+            try {
+                const resp = await fetch(`/api/playlist/info?url=${encodeURIComponent(url)}`);
+                const data = await resp.json();
+                if (data.error) {
+                    setValidation('error', data.error);
+                    return;
+                }
+                playlistInfo = { ...data, url };
+                const platform = data.platform === 'apple' ? 'Apple Music' : 'Spotify';
+                const tracks = data.track_count ? ` · ${data.track_count} tracks` : '';
+                setValidation('ok',
+                    `<span class="pl-badge ${data.platform}">${platform}</span> <strong>${escHtml(data.title)}</strong>${tracks}`
+                );
+                playlistDlBtn.disabled = false;
+            } catch (_) {
+                setValidation('error', 'Could not reach server');
+            }
+        }
+
+        function setValidation(state, html) {
+            playlistValidation.className = 'playlist-validation';
+            if (state) playlistValidation.classList.add(`pv-${state}`);
+            if (state === 'loading') {
+                playlistValidation.innerHTML = `<div class="pv-spinner"></div><span>${html}</span>`;
+            } else {
+                playlistValidation.innerHTML = html ? `<span>${html}</span>` : '';
+            }
+        }
+
+        function escHtml(s) {
+            return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+        }
+
+        playlistDlBtn.addEventListener('click', async () => {
+            if (!playlistInfo) return;
+            playlistDlBtn.disabled = true;
+            playlistDlBtn.textContent = 'Starting…';
+
+            try {
+                const resp = await fetch('/api/playlist/download', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ url: playlistInfo.url, playlist_name: playlistInfo.title }),
+                });
+                const data = await resp.json();
+                if (data.error) {
+                    showPlaylistStatus('error', `Error: ${data.error}`);
+                    playlistDlBtn.disabled = false;
+                    playlistDlBtn.textContent = 'Download';
+                    return;
+                }
+                showPlaylistStatus('downloading', `Downloading <strong>${escHtml(playlistInfo.title)}</strong>…`);
+                pollPlaylistDownload(data.download_id);
+            } catch (_) {
+                showPlaylistStatus('error', 'Request failed');
+                playlistDlBtn.disabled = false;
+                playlistDlBtn.textContent = 'Download';
+            }
+        });
+
+        function showPlaylistStatus(state, html) {
+            playlistStatusArea.className = `playlist-status-area ps-${state}`;
+            playlistStatusText.innerHTML = html;
+            playlistStatusArea.classList.remove('hidden');
+        }
+
+        function pollPlaylistDownload(downloadId) {
+            const interval = setInterval(async () => {
+                try {
+                    const resp = await fetch(`/api/download/${downloadId}`);
+                    const data = await resp.json();
+                    if (data.status === 'done') {
+                        clearInterval(interval);
+                        showPlaylistStatus('done', `Downloaded <strong>${escHtml(playlistInfo.title)}</strong> to ~/Music/MusicSearch/`);
+                        playlistDlBtn.textContent = 'Download';
+                        playlistDlBtn.disabled = false;
+                    } else if (data.status === 'error') {
+                        clearInterval(interval);
+                        showPlaylistStatus('error', `Failed: ${escHtml(data.error || 'Unknown error')}`);
+                        playlistDlBtn.textContent = 'Download';
+                        playlistDlBtn.disabled = false;
+                    } else if (data.log_tail) {
+                        const last = data.log_tail.trim().split('\n').pop() || '';
+                        showPlaylistStatus('downloading', `Downloading <strong>${escHtml(playlistInfo.title)}</strong>… <span class="ps-log">${escHtml(last)}</span>`);
+                    }
+                } catch (_) {
+                    clearInterval(interval);
+                    showPlaylistStatus('error', 'Lost connection to server');
+                }
+            }, 3000);
+        }
+    </script>
+</body>
+</html>
