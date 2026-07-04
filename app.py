@@ -60,7 +60,7 @@ def get_spotify_token():
 
 
 def search_apple_music(query, limit=20):
-    apple_script = os.path.join(os.path.dirname(__file__), "apple_music_search.py")
+    apple_script = os.path.join(os.path.dirname(__file__), "scripts", "apple", "search.py")
     try:
         result = subprocess.run(
             [sys.executable, apple_script, query],
@@ -180,7 +180,7 @@ def parse_playlist_url(url):
 
 
 def get_apple_music_playlist_info(playlist_id):
-    script = os.path.join(os.path.dirname(__file__), "apple_music_playlist_info.py")
+    script = os.path.join(os.path.dirname(__file__), "scripts", "apple", "playlist_info.py")
     result = subprocess.run(
         [sys.executable, script, playlist_id],
         capture_output=True, text=True, timeout=30,
@@ -210,9 +210,9 @@ def get_spotify_playlist_info(playlist_id):
 def fetch_full_playlist_info(platform, playlist_id):
     """Returns {title, track_count, duration_ms, tracks:[{title,artist,duration_ms,...}]}."""
     if platform == "apple":
-        script = os.path.join(os.path.dirname(__file__), "apple_music_playlist_full.py")
+        script = os.path.join(os.path.dirname(__file__), "scripts", "apple", "playlist_full.py")
     else:
-        script = os.path.join(os.path.dirname(__file__), "harmoni_playlist_full.py")
+        script = os.path.join(os.path.dirname(__file__), "scripts", "harmoni", "playlist_full.py")
     result = subprocess.run(
         [sys.executable, script, playlist_id],
         capture_output=True, text=True, timeout=60,
@@ -290,7 +290,7 @@ def playlist_download_worker(download_id, platform, url, playlist_id, playlist_n
             cmd = [
                 GAMDL, url,
                 "-o", playlist_dir,
-                "--config-path", os.path.expanduser("~/.gamdl/config.ini"),
+                "--config-path", os.path.join(os.path.dirname(__file__), "gamdl", "config.ini"),
             ]
             downloads[download_id]["cmd"] = " ".join(cmd)
             with open(log_path, "w") as log_file:
@@ -298,7 +298,7 @@ def playlist_download_worker(download_id, platform, url, playlist_id, playlist_n
                 downloads[download_id]["pid"] = proc.pid
                 returncode = proc.wait(timeout=7200)
         else:
-            harmoni_script = os.path.join(os.path.dirname(__file__), "harmoni_playlist_download.py")
+            harmoni_script = os.path.join(os.path.dirname(__file__), "scripts", "harmoni", "playlist_download.py")
             cmd = [sys.executable, harmoni_script, playlist_id, safe_name, DOWNLOAD_DIR]
             downloads[download_id]["cmd"] = " ".join(cmd)
             with open(log_path, "w") as log_file:
@@ -436,14 +436,14 @@ def update_playlist_worker(download_id, platform, playlist_id):
                 cmd = [
                     GAMDL, *[t["url"] for t in to_download],
                     "-o", folder,
-                    "--config-path", os.path.expanduser("~/.gamdl/config.ini"),
+                    "--config-path", os.path.join(os.path.dirname(__file__), "gamdl", "config.ini"),
                 ]
                 downloads[download_id]["cmd"] = " ".join(cmd)
                 proc = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT)
                 downloads[download_id]["pid"] = proc.pid
                 returncode = proc.wait(timeout=7200)
             else:
-                harmoni_script = os.path.join(os.path.dirname(__file__), "harmoni_tracks_download.py")
+                harmoni_script = os.path.join(os.path.dirname(__file__), "scripts", "harmoni", "tracks_download.py")
                 cmd = [sys.executable, harmoni_script, safe_name, DOWNLOAD_DIR]
                 downloads[download_id]["cmd"] = " ".join(cmd)
                 stdin_payload = json.dumps([
@@ -511,10 +511,10 @@ def download_worker(download_id, platform, title, artist, url):
             cmd = [
                 GAMDL, url,
                 "-o", DOWNLOAD_DIR,
-                "--config-path", os.path.expanduser("~/.gamdl/config.ini"),
+                "--config-path", os.path.join(os.path.dirname(__file__), "gamdl", "config.ini"),
             ]
         else:
-            harmoni_script = os.path.join(os.path.dirname(__file__), "harmoni_download.py")
+            harmoni_script = os.path.join(os.path.dirname(__file__), "scripts", "harmoni", "download.py")
             cmd = [sys.executable, harmoni_script, artist, title, DOWNLOAD_DIR]
 
         downloads[download_id]["cmd"] = " ".join(cmd)

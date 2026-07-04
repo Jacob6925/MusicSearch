@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import os
 import sys
 
 logging.disable(logging.CRITICAL)
@@ -16,7 +17,7 @@ structlog.configure(
 
 from gamdl.api.apple_music import AppleMusicApi
 
-COOKIES_PATH = "/Users/jacob/.gamdl/cookies.txt"
+COOKIES_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "gamdl", "cookies.txt")
 
 
 async def get_info(playlist_id: str) -> dict:

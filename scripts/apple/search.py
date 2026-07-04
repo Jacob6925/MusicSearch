@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import os
 import sys
 
 logging.disable(logging.CRITICAL)
@@ -14,7 +15,7 @@ structlog.configure(processors=[structlog.dev.ConsoleRenderer()],
 
 from gamdl.api.apple_music import AppleMusicApi
 
-COOKIES_PATH = "/Users/jacob/.gamdl/cookies.txt"
+COOKIES_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "gamdl", "cookies.txt")
 
 
 def pick_explicit(songs: list[dict]) -> list[dict]:
