@@ -31,10 +31,18 @@ try:
         if not track or not track.get("name"):
             continue
         artists = [a["name"] for a in track.get("artists", []) if a.get("name")]
+        album = track.get("album", {}) or {}
+        images = album.get("images", []) or []
         tracks.append({
             "title": track["name"],
-            "artist": artists[0] if artists else "Unknown",
+            "artist": ", ".join(artists) if artists else "Unknown",
+            "album": album.get("name", ""),
+            "artwork": images[0]["url"] if images else "",
+            "preview_url": track.get("preview_url", "") or "",
+            "url": track.get("external_urls", {}).get("spotify", ""),
             "duration_ms": track.get("duration_ms", 0),
+            "release_date": album.get("release_date", ""),
+            "explicit": bool(track.get("explicit", False)),
         })
 
     result = {

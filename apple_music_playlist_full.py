@@ -20,6 +20,10 @@ from gamdl.api.apple_music import AppleMusicApi
 COOKIES_PATH = "/Users/jacob/.gamdl/cookies.txt"
 
 
+def format_artwork(url_template: str, size: int = 200) -> str:
+    return url_template.replace("{w}", str(size)).replace("{h}", str(size))
+
+
 async def get_full_playlist(playlist_id: str) -> dict:
     api = await AppleMusicApi.create_from_netscape_cookies(COOKIES_PATH)
     data = await api.get_playlist(playlist_id, limit_tracks=300)
@@ -42,11 +46,17 @@ async def get_full_playlist(playlist_id: str) -> dict:
         t_attrs = t.get("attributes", {})
         if not t_attrs:
             continue
+        artwork_raw = t_attrs.get("artwork", {}).get("url", "")
         track_list.append({
             "title": t_attrs.get("name", "Unknown"),
             "artist": t_attrs.get("artistName", "Unknown"),
-            "duration_ms": t_attrs.get("durationInMillis", 0),
+            "album": t_attrs.get("albumName", ""),
+            "artwork": format_artwork(artwork_raw) if artwork_raw else "",
+            "preview_url": (t_attrs.get("previews") or [{}])[0].get("url", ""),
             "url": t_attrs.get("url", ""),
+            "duration_ms": t_attrs.get("durationInMillis", 0),
+            "release_date": t_attrs.get("releaseDate", ""),
+            "explicit": t_attrs.get("contentRating", "") == "explicit",
         })
 
     return {

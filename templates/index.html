@@ -14,15 +14,30 @@
         </header>
 
         <div class="search-section">
-            <form id="search-form">
-                <div class="search-bar">
-                    <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
-                    </svg>
-                    <input type="text" id="search-input" placeholder="Search for songs or artists..." autocomplete="off">
-                    <button type="submit" id="search-btn">Search</button>
+            <div class="search-top-row">
+                <form id="search-form" class="search-form-flex">
+                    <div class="search-bar">
+                        <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+                        </svg>
+                        <input type="text" id="search-input" placeholder="Search for songs or artists..." autocomplete="off">
+                        <button type="submit" id="search-btn">Search</button>
+                    </div>
+                </form>
+
+                <div class="pm-menu-wrap">
+                    <button id="pm-toggle-btn" class="pm-toggle-btn">
+                        Your Playlists
+                        <svg class="pm-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                    </button>
+                    <div id="pm-dropdown" class="pm-dropdown hidden">
+                        <div id="pm-list" class="pm-list">
+                            <div class="pm-empty">No playlists downloaded yet</div>
+                        </div>
+                        <div id="pm-status" class="pm-status hidden"></div>
+                    </div>
                 </div>
-            </form>
+            </div>
 
             <div class="platform-toggle">
                 <button class="platform-btn active" data-platform="both">
@@ -365,8 +380,8 @@
         });
 
         function isPlaylistUrl(url) {
-            return /https:\/\/music\.apple\.com\/[^/]+\/playlist\//.test(url)
-                || /https:\/\/open\.spotify\.com\/playlist\//.test(url);
+            return /music\.apple\.com\/([a-z]{2}(-[a-z]{2})?\/)?playlist\//i.test(url)
+                || /open\.spotify\.com\/(intl-[a-z]{2}\/)?playlist\//i.test(url);
         }
 
         async function validatePlaylistUrl(url) {
@@ -449,6 +464,7 @@
                         showPlaylistStatus('done', `Downloaded <strong>${escHtml(playlistInfo.title)}</strong> to ~/Music/MusicSearch/`);
                         playlistDlBtn.textContent = 'Download';
                         playlistDlBtn.disabled = false;
+                        loadPlaylistManager();
                     } else if (data.status === 'error') {
                         clearInterval(interval);
                         showPlaylistStatus('error', `Failed: ${escHtml(data.error || 'Unknown error')}`);
@@ -464,6 +480,207 @@
                 }
             }, 3000);
         }
+
+        // ── Playlist manager ──────────────────────────────────────────────
+        const pmSelect = document.getElementById('pm-select');
+        const pmToggleBtn = document.getElementById('pm-toggle-btn');
+        const pmMenuWrap = document.querySelector('.pm-menu-wrap');
+        const pmDropdown = document.getElementById('pm-dropdown');
+        const pmList = document.getElementById('pm-list');
+        const pmStatus = document.getElementById('pm-status');
+
+        let managedPlaylists = [];
+
+        function formatTotalDuration(ms) {
+            if (!ms) return '0m';
+            const totalSec = Math.floor(ms / 1000);
+            const h = Math.floor(totalSec / 3600);
+            const m = Math.floor((totalSec % 3600) / 60);
+            return h > 0 ? `${h}h ${m}m` : `${m}m`;
+        }
+
+        function formatUpdatedDate(epochSeconds) {
+            if (!epochSeconds) return 'unknown';
+            return new Date(epochSeconds * 1000).toLocaleString(undefined, {
+                year: 'numeric', month: 'short', day: 'numeric',
+                hour: 'numeric', minute: '2-digit',
+            });
+        }
+
+        function findPlaylist(platform, id) {
+            return managedPlaylists.find(p => p.platform === platform && p.id === id) || null;
+        }
+
+        async function loadPlaylistManager() {
+            try {
+                const resp = await fetch('/api/playlists');
+                const data = await resp.json();
+                managedPlaylists = data.playlists || [];
+                renderPlaylistManager();
+            } catch (_) {
+                // leave existing dropdown state as-is
+            }
+        }
+
+        function renderPlaylistManager() {
+            if (managedPlaylists.length === 0) {
+                pmList.innerHTML = '<div class="pm-empty">No playlists downloaded yet</div>';
+                return;
+            }
+            pmList.innerHTML = managedPlaylists.map(p => {
+                const platform = p.platform === 'apple' ? 'Apple Music' : 'Spotify';
+                return `
+                    <div class="pm-item" data-platform="${p.platform}" data-id="${escHtml(p.id)}">
+                        <div class="pm-item-info">
+                            <span class="pm-item-title" title="${escHtml(p.title)}">${escHtml(p.title)}</span>
+                            <span class="pm-item-meta">
+                                <span class="pl-badge ${p.platform}">${platform}</span>
+                                ${p.song_count} songs · ${formatTotalDuration(p.duration_ms)}
+                            </span>
+                            <span class="pm-item-updated">Updated ${formatUpdatedDate(p.updated_at)}</span>
+                        </div>
+                        <div class="pm-item-actions">
+                            <button class="pm-btn pm-item-view">View</button>
+                            <button class="pm-btn pm-item-update">Update</button>
+                            <button class="pm-btn pm-btn-danger pm-item-delete">Delete</button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        pmToggleBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const opening = pmDropdown.classList.contains('hidden');
+            pmDropdown.classList.toggle('hidden');
+            if (opening) loadPlaylistManager();
+        });
+
+        document.addEventListener('click', (e) => {
+            if (!pmMenuWrap.contains(e.target)) {
+                pmDropdown.classList.add('hidden');
+            }
+        });
+
+        function showPmStatus(state, html) {
+            pmStatus.className = `pm-status ps-${state}`;
+            pmStatus.innerHTML = html;
+            pmStatus.classList.remove('hidden');
+        }
+
+        pmList.addEventListener('click', async (e) => {
+            const item = e.target.closest('.pm-item');
+            if (!item) return;
+            const pl = findPlaylist(item.dataset.platform, item.dataset.id);
+            if (!pl) return;
+
+            if (e.target.classList.contains('pm-item-delete')) {
+                if (!confirm(`Remove "${pl.title}" from the playlist manager?\n\nThis only removes the entry — no files or downloads will be deleted.`)) return;
+                const btn = e.target;
+                btn.disabled = true;
+                try {
+                    const resp = await fetch(`/api/playlists/${pl.platform}/${encodeURIComponent(pl.id)}`, { method: 'DELETE' });
+                    const data = await resp.json();
+                    if (data.error) {
+                        showPmStatus('error', `Error: ${escHtml(data.error)}`);
+                        btn.disabled = false;
+                    } else {
+                        showPmStatus('done', `Removed <strong>${escHtml(pl.title)}</strong> from the playlist manager`);
+                        await loadPlaylistManager();
+                    }
+                } catch (_) {
+                    showPmStatus('error', 'Request failed');
+                    btn.disabled = false;
+                }
+                return;
+            }
+
+            if (e.target.classList.contains('pm-item-view')) {
+                const btn = e.target;
+                btn.disabled = true;
+                showPmStatus('downloading', 'Fetching current playlist…');
+                stopAudio();
+                try {
+                    const resp = await fetch(`/api/playlists/${pl.platform}/${encodeURIComponent(pl.id)}/view`);
+                    const data = await resp.json();
+                    if (data.error) {
+                        showPmStatus('error', `Error: ${escHtml(data.error)}`);
+                        return;
+                    }
+                    pmStatus.classList.add('hidden');
+                    pmDropdown.classList.add('hidden');
+                    errorDiv.classList.add('hidden');
+                    emptyState.classList.add('hidden');
+                    resultsInfo.textContent = `${data.track_count} songs in "${data.title}" (${formatTotalDuration(data.duration_ms)})`;
+                    resultsInfo.classList.remove('hidden');
+                    renderResults(data.tracks);
+                } catch (_) {
+                    showPmStatus('error', 'Request failed');
+                } finally {
+                    btn.disabled = false;
+                }
+                return;
+            }
+
+            if (e.target.classList.contains('pm-item-update')) {
+                const viewBtn = item.querySelector('.pm-item-view');
+                const updateBtn = e.target;
+                const deleteBtn = item.querySelector('.pm-item-delete');
+                updateBtn.disabled = true;
+                deleteBtn.disabled = true;
+                viewBtn.disabled = true;
+                showPmStatus('downloading', `Checking <strong>${escHtml(pl.title)}</strong> for changes…`);
+                try {
+                    const resp = await fetch(`/api/playlists/${pl.platform}/${encodeURIComponent(pl.id)}/update`, { method: 'POST' });
+                    const data = await resp.json();
+                    if (data.error) {
+                        showPmStatus('error', `Error: ${escHtml(data.error)}`);
+                        updateBtn.disabled = false;
+                        deleteBtn.disabled = false;
+                        viewBtn.disabled = false;
+                        return;
+                    }
+                    pollPlaylistUpdate(data.download_id, pl);
+                } catch (_) {
+                    showPmStatus('error', 'Request failed');
+                    updateBtn.disabled = false;
+                    deleteBtn.disabled = false;
+                    viewBtn.disabled = false;
+                }
+                return;
+            }
+        });
+
+        function pollPlaylistUpdate(downloadId, pl) {
+            const interval = setInterval(async () => {
+                try {
+                    const resp = await fetch(`/api/download/${downloadId}`);
+                    const data = await resp.json();
+                    if (data.status === 'done') {
+                        clearInterval(interval);
+                        const n = data.downloaded_count || 0;
+                        const msg = n > 0
+                            ? `Updated <strong>${escHtml(pl.title)}</strong> — downloaded ${n} missing song${n === 1 ? '' : 's'}`
+                            : `<strong>${escHtml(pl.title)}</strong> is already up to date`;
+                        showPmStatus('done', msg);
+                        await loadPlaylistManager();
+                    } else if (data.status === 'error') {
+                        clearInterval(interval);
+                        showPmStatus('error', `Failed: ${escHtml(data.error || 'Unknown error')}`);
+                        await loadPlaylistManager();
+                    } else if (data.log_tail) {
+                        const last = data.log_tail.trim().split('\n').pop() || '';
+                        showPmStatus('downloading', `Updating <strong>${escHtml(pl.title)}</strong>… <span class="ps-log">${escHtml(last)}</span>`);
+                    }
+                } catch (_) {
+                    clearInterval(interval);
+                    showPmStatus('error', 'Lost connection to server');
+                    await loadPlaylistManager();
+                }
+            }, 3000);
+        }
+
+        loadPlaylistManager();
     </script>
 </body>
 </html>

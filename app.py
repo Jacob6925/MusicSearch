@@ -2,6 +2,7 @@ import json
 import os
 import re
 import sys
+import time
 import base64
 import subprocess
 import threading
@@ -9,6 +10,8 @@ import uuid
 import requests
 from dotenv import load_dotenv
 from flask import Flask, render_template, request, jsonify
+
+import playlist_store
 
 load_dotenv()
 
@@ -167,10 +170,10 @@ def api_status():
 def parse_playlist_url(url):
     """Returns (platform, playlist_id) or (None, None)."""
     url = url.strip()
-    am = re.search(r'https://music\.apple\.com/[^/]+/playlist/[^/]+/(pl\.[^/?#\s]+)', url)
+    am = re.search(r'music\.apple\.com/(?:[a-z]{2}(?:-[a-z]{2})?/)?playlist/(?:[^/?#\s]+/)?(pl\.[^/?#\s]+)', url, re.IGNORECASE)
     if am:
         return "apple", am.group(1)
-    sp = re.search(r'https://open\.spotify\.com/playlist/([A-Za-z0-9]+)', url)
+    sp = re.search(r'open\.spotify\.com/(?:intl-[a-z]{2}/)?playlist/([A-Za-z0-9]+)', url, re.IGNORECASE)
     if sp:
         return "spotify", sp.group(1)
     return None, None
@@ -202,6 +205,58 @@ def get_spotify_playlist_info(playlist_id):
     data = resp.json()
     return {"title": data["name"], "track_count": data.get("tracks", {}).get("total", 0)}
 
+
+
+def fetch_full_playlist_info(platform, playlist_id):
+    """Returns {title, track_count, duration_ms, tracks:[{title,artist,duration_ms,...}]}."""
+    if platform == "apple":
+        script = os.path.join(os.path.dirname(__file__), "apple_music_playlist_full.py")
+    else:
+        script = os.path.join(os.path.dirname(__file__), "harmoni_playlist_full.py")
+    result = subprocess.run(
+        [sys.executable, script, playlist_id],
+        capture_output=True, text=True, timeout=60,
+    )
+    if result.stdout.strip():
+        data = json.loads(result.stdout)
+        if "error" in data:
+            raise RuntimeError(data["error"])
+        data["platform"] = platform
+        for t in data.get("tracks", []):
+            t["platform"] = platform
+        return data
+    raise RuntimeError(result.stderr.strip() or "Failed to fetch playlist info")
+
+
+def safe_playlist_name(name):
+    return re.sub(r'[/\\:*?"<>|]', "", name).strip() or "Playlist"
+
+
+def normalize_name(s):
+    return re.sub(r'[^a-z0-9]+', '', (s or "").lower())
+
+
+def primary_artist(artist):
+    return re.split(r',|&| feat\.?| ft\.?', artist or "", flags=re.IGNORECASE)[0].strip()
+
+
+def local_track_exists(folder, artist, title):
+    if not os.path.isdir(folder):
+        return False
+    norm_title = normalize_name(title)
+    norm_artist = normalize_name(primary_artist(artist))
+    if not norm_title:
+        return False
+    for fname in os.listdir(folder):
+        stem = os.path.splitext(fname)[0]
+        norm_stem = normalize_name(stem)
+        if norm_title in norm_stem and (not norm_artist or norm_artist in norm_stem):
+            return True
+    return False
+
+
+def missing_tracks(folder, tracks):
+    return [t for t in tracks if not local_track_exists(folder, t["artist"], t["title"])]
 
 
 @app.route("/api/playlist/info")
@@ -253,6 +308,20 @@ def playlist_download_worker(download_id, platform, url, playlist_id, playlist_n
 
         if returncode == 0:
             downloads[download_id]["status"] = "done"
+            try:
+                info = fetch_full_playlist_info(platform, playlist_id)
+                playlist_store.add_playlist({
+                    "id": playlist_id,
+                    "platform": platform,
+                    "title": info["title"],
+                    "folder": playlist_dir,
+                    "song_count": info["track_count"],
+                    "duration_ms": info["duration_ms"],
+                    "added_at": time.time(),
+                    "updated_at": time.time(),
+                })
+            except Exception as e:
+                downloads[download_id]["manager_error"] = str(e)
         else:
             tail = _tail_log(log_path, 20)
             downloads[download_id]["status"] = "error"
@@ -299,6 +368,137 @@ def api_playlist_download():
     return jsonify({"download_id": download_id, "status": "queued"})
 
 
+@app.route("/api/playlists")
+def api_playlists():
+    return jsonify({"playlists": playlist_store.list_playlists()})
+
+
+@app.route("/api/playlists/<platform>/<playlist_id>", methods=["DELETE"])
+def api_playlist_delete(platform, playlist_id):
+    removed = playlist_store.remove_playlist(platform, playlist_id)
+    if not removed:
+        return jsonify({"error": "Playlist not found"}), 404
+    return jsonify({"ok": True})
+
+
+@app.route("/api/playlists/<platform>/<playlist_id>/view")
+def api_playlist_view(platform, playlist_id):
+    entry = playlist_store.get_playlist(platform, playlist_id)
+    if not entry:
+        return jsonify({"error": "Playlist not found in manager"}), 404
+    try:
+        info = fetch_full_playlist_info(platform, playlist_id)
+        return jsonify(info)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+def update_playlist_worker(download_id, platform, playlist_id):
+    entry = playlist_store.get_playlist(platform, playlist_id)
+    log_path = os.path.join(DOWNLOAD_DIR, f".dl_{download_id}.log")
+    try:
+        downloads[download_id]["status"] = "downloading"
+        downloads[download_id]["log"] = log_path
+
+        info = fetch_full_playlist_info(platform, playlist_id)
+        old_folder = entry["folder"]
+        new_safe_name = safe_playlist_name(info["title"])
+        new_folder = os.path.join(DOWNLOAD_DIR, new_safe_name)
+
+        folder = old_folder
+        if new_folder != old_folder:
+            if os.path.isdir(old_folder) and not os.path.exists(new_folder):
+                os.rename(old_folder, new_folder)
+                folder = new_folder
+            elif not os.path.isdir(old_folder):
+                os.makedirs(new_folder, exist_ok=True)
+                folder = new_folder
+        os.makedirs(folder, exist_ok=True)
+
+        to_download = missing_tracks(folder, info["tracks"])
+
+        playlist_store.update_playlist(platform, playlist_id, {
+            "title": info["title"],
+            "folder": folder,
+            "song_count": info["track_count"],
+            "duration_ms": info["duration_ms"],
+            "updated_at": time.time(),
+        })
+
+        if not to_download:
+            downloads[download_id]["status"] = "done"
+            downloads[download_id]["downloaded_count"] = 0
+            return
+
+        safe_name = os.path.basename(folder)
+        with open(log_path, "w") as log_file:
+            if platform == "apple":
+                cmd = [
+                    GAMDL, *[t["url"] for t in to_download],
+                    "-o", folder,
+                    "--config-path", os.path.expanduser("~/.gamdl/config.ini"),
+                ]
+                downloads[download_id]["cmd"] = " ".join(cmd)
+                proc = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT)
+                downloads[download_id]["pid"] = proc.pid
+                returncode = proc.wait(timeout=7200)
+            else:
+                harmoni_script = os.path.join(os.path.dirname(__file__), "harmoni_tracks_download.py")
+                cmd = [sys.executable, harmoni_script, safe_name, DOWNLOAD_DIR]
+                downloads[download_id]["cmd"] = " ".join(cmd)
+                stdin_payload = json.dumps([
+                    {"artist": t["artist"], "track": t["title"]} for t in to_download
+                ])
+                proc = subprocess.Popen(
+                    cmd, stdin=subprocess.PIPE, stdout=log_file, stderr=subprocess.STDOUT, text=True,
+                )
+                downloads[download_id]["pid"] = proc.pid
+                proc.stdin.write(stdin_payload)
+                proc.stdin.close()
+                returncode = proc.wait(timeout=7200)
+
+        if returncode == 0:
+            downloads[download_id]["status"] = "done"
+            downloads[download_id]["downloaded_count"] = len(to_download)
+        else:
+            tail = _tail_log(log_path, 20)
+            downloads[download_id]["status"] = "error"
+            downloads[download_id]["error"] = f"Exit code {returncode}. Last output:\n{tail}"
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        downloads[download_id]["status"] = "error"
+        downloads[download_id]["error"] = "Timed out after 2 hours"
+    except Exception as e:
+        downloads[download_id]["status"] = "error"
+        downloads[download_id]["error"] = str(e)
+    finally:
+        try:
+            if os.path.exists(log_path):
+                os.remove(log_path)
+        except Exception:
+            pass
+
+
+@app.route("/api/playlists/<platform>/<playlist_id>/update", methods=["POST"])
+def api_playlist_update(platform, playlist_id):
+    entry = playlist_store.get_playlist(platform, playlist_id)
+    if not entry:
+        return jsonify({"error": "Playlist not found in manager"}), 404
+
+    download_id = str(uuid.uuid4())[:8]
+    downloads[download_id] = {
+        "status": "queued",
+        "title": entry["title"],
+        "platform": platform,
+        "type": "playlist_update",
+    }
+    thread = threading.Thread(
+        target=update_playlist_worker,
+        args=(download_id, platform, playlist_id),
+        daemon=True,
+    )
+    thread.start()
+    return jsonify({"download_id": download_id, "status": "queued"})
 
 
 def download_worker(download_id, platform, title, artist, url):
