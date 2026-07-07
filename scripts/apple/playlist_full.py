@@ -3,26 +3,9 @@
 (title, artist, duration, per-song URL), via gamdl's authenticated API."""
 import asyncio
 import json
-import logging
-import os
 import sys
 
-logging.disable(logging.CRITICAL)
-
-import structlog
-structlog.configure(
-    processors=[structlog.dev.ConsoleRenderer()],
-    wrapper_class=structlog.BoundLogger,
-    logger_factory=structlog.PrintLoggerFactory(file=open("/dev/null", "w")),
-)
-
-from gamdl.api.apple_music import AppleMusicApi
-
-COOKIES_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "gamdl", "cookies.txt")
-
-
-def format_artwork(url_template: str, size: int = 200) -> str:
-    return url_template.replace("{w}", str(size)).replace("{h}", str(size))
+from _common import AppleMusicApi, COOKIES_PATH, format_artwork
 
 
 async def get_full_playlist(playlist_id: str) -> dict:

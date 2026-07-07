@@ -2,20 +2,9 @@
 """Use gamdl's authenticated Apple Music API to search for songs, preferring explicit."""
 import asyncio
 import json
-import logging
-import os
 import sys
 
-logging.disable(logging.CRITICAL)
-
-import structlog
-structlog.configure(processors=[structlog.dev.ConsoleRenderer()],
-                   wrapper_class=structlog.BoundLogger,
-                   logger_factory=structlog.PrintLoggerFactory(file=open("/dev/null","w")))
-
-from gamdl.api.apple_music import AppleMusicApi
-
-COOKIES_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "gamdl", "cookies.txt")
+from _common import AppleMusicApi, COOKIES_PATH, format_artwork
 
 
 def pick_explicit(songs: list[dict]) -> list[dict]:
@@ -53,10 +42,6 @@ def pick_explicit(songs: list[dict]) -> list[dict]:
         result.append(by_isrc[isrc])
 
     return result
-
-
-def format_artwork(url_template: str, size: int = 200) -> str:
-    return url_template.replace("{w}", str(size)).replace("{h}", str(size))
 
 
 async def search(query: str, limit: int = 20) -> list[dict]:

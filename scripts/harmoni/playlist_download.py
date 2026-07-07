@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
 """Download a Spotify playlist via harmoni: fetches tracks using harmoni's OAuth token, then batch downloads."""
 import asyncio
-import json
-import os
 import sys
 
-sys.path.insert(0, "/Users/jacob/harmoni")
-
+from _common import config, audio_format, spotify_error_message
 from spotify_api.client import SpotifyClient
 from downloader.playlist_download import download_playlist
 
@@ -18,13 +15,12 @@ playlist_id = sys.argv[1]
 playlist_name = sys.argv[2]
 output_dir = sys.argv[3]
 
-config_path = "/Users/jacob/harmoni/config.json"
-with open(config_path) as f:
-    config = json.load(f)
-
-# Use harmoni's OAuth token (has playlist-read-private scope)
-client = SpotifyClient(config)
-raw_items = client.get_playlist_tracks(playlist_id)
+try:
+    client = SpotifyClient(config)
+    raw_items = client.get_playlist_tracks(playlist_id)
+except Exception as e:
+    print(spotify_error_message(e), file=sys.stderr)
+    sys.exit(1)
 
 tracks = []
 for item in raw_items:
@@ -38,10 +34,13 @@ for item in raw_items:
     tracks.append({"artist": artists[0] if artists else "", "track": track["name"]})
 
 if not tracks:
-    print(f"No tracks found in playlist {playlist_id}", file=sys.stderr)
+    print(f"Error: No tracks found in playlist {playlist_id}. The playlist may be empty or inaccessible.", file=sys.stderr)
     sys.exit(1)
 
 print(f"Found {len(tracks)} tracks in '{playlist_name}', downloading...")
 
-audio_format = config.get("audio_format", "mp3")
-asyncio.run(download_playlist(playlist_name, tracks, output_dir, audio_format, 0, config))
+try:
+    asyncio.run(download_playlist(playlist_name, tracks, output_dir, audio_format, 0, config))
+except Exception as e:
+    print(f"Error: Download failed — {e}", file=sys.stderr)
+    sys.exit(1)

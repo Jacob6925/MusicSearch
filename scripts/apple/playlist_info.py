@@ -2,22 +2,9 @@
 """Fetch Apple Music playlist title and track count via gamdl's authenticated API."""
 import asyncio
 import json
-import logging
-import os
 import sys
 
-logging.disable(logging.CRITICAL)
-
-import structlog
-structlog.configure(
-    processors=[structlog.dev.ConsoleRenderer()],
-    wrapper_class=structlog.BoundLogger,
-    logger_factory=structlog.PrintLoggerFactory(file=open("/dev/null", "w")),
-)
-
-from gamdl.api.apple_music import AppleMusicApi
-
-COOKIES_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "gamdl", "cookies.txt")
+from _common import AppleMusicApi, COOKIES_PATH
 
 
 async def get_info(playlist_id: str) -> dict:
@@ -36,5 +23,9 @@ if __name__ == "__main__":
         print(json.dumps({"error": "No playlist ID provided"}))
         sys.exit(1)
     playlist_id = sys.argv[1]
-    result = asyncio.run(get_info(playlist_id))
-    print(json.dumps(result))
+    try:
+        result = asyncio.run(get_info(playlist_id))
+        print(json.dumps(result))
+    except Exception as e:
+        print(json.dumps({"error": str(e)}))
+        sys.exit(1)

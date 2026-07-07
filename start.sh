@@ -1,1 +1,1 @@
-python3 /Users/jacob/Claude/ClaudeCode/MusicSearch/app.py
+python3 "$(dirname "$0")/app.py"

@@ -1,9 +1,10 @@
 """JSON-backed store for playlists downloaded on this machine."""
 import json
-import os
 import threading
+from pathlib import Path
 
-STORE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "playlists.json")
+STORE_PATH = Path(__file__).parent / "playlists.json"
+DOWNLOAD_DIR = Path.home() / "Music" / "MusicSearch"
 _lock = threading.Lock()
 
 
@@ -11,21 +12,48 @@ def _key(platform, playlist_id):
     return f"{platform}:{playlist_id}"
 
 
+def _to_relative_folder(folder: str) -> str:
+    """Store only the playlist subfolder name so the record is machine-portable."""
+    p = Path(folder)
+    try:
+        return str(p.relative_to(DOWNLOAD_DIR))
+    except ValueError:
+        return str(p)
+
+
+def _resolve_folder(folder: str) -> str:
+    """Reconstruct the absolute folder path from a stored relative or absolute value."""
+    p = Path(folder)
+    if p.is_absolute():
+        return str(p)
+    return str(DOWNLOAD_DIR / p)
+
+
 def _load():
-    if not os.path.exists(STORE_PATH):
+    if not STORE_PATH.exists():
         return {}
     try:
         with open(STORE_PATH) as f:
-            return json.load(f)
+            data = json.load(f)
+        for entry in data.values():
+            if "folder" in entry:
+                entry["folder"] = _resolve_folder(entry["folder"])
+        return data
     except Exception:
         return {}
 
 
 def _save(data):
-    tmp_path = STORE_PATH + ".tmp"
+    portable = {}
+    for key, entry in data.items():
+        e = dict(entry)
+        if "folder" in e:
+            e["folder"] = _to_relative_folder(e["folder"])
+        portable[key] = e
+    tmp_path = STORE_PATH.with_suffix(".json.tmp")
     with open(tmp_path, "w") as f:
-        json.dump(data, f, indent=2)
-    os.replace(tmp_path, STORE_PATH)
+        json.dump(portable, f, indent=2)
+    tmp_path.replace(STORE_PATH)
 
 
 def list_playlists():

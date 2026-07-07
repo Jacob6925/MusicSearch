@@ -1,2 +1,8 @@
 /playlists.json
 /gamdl/cookies.txt
+/gamdl/.config_resolved.ini
+/.env
+/app.log
+__pycache__/
+*.pyc
+.DS_Store

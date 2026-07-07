@@ -4,8 +4,7 @@
 import json
 import sys
 
-sys.path.insert(0, "/Users/jacob/harmoni")
-
+from _common import config, spotify_error_message
 from spotify_api.client import SpotifyClient
 
 if len(sys.argv) < 2:
@@ -13,10 +12,6 @@ if len(sys.argv) < 2:
     sys.exit(1)
 
 playlist_id = sys.argv[1]
-
-config_path = "/Users/jacob/harmoni/config.json"
-with open(config_path) as f:
-    config = json.load(f)
 
 try:
     client = SpotifyClient(config)
@@ -53,5 +48,6 @@ try:
     }
     print(json.dumps(result))
 except Exception as e:
-    print(json.dumps({"error": str(e)}))
+    msg = spotify_error_message(e)
+    print(json.dumps({"error": msg[7:] if msg.startswith("Error: ") else msg}))
     sys.exit(1)

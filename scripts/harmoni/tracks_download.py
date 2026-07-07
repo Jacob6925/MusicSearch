@@ -6,8 +6,7 @@ import asyncio
 import json
 import sys
 
-sys.path.insert(0, "/Users/jacob/harmoni")
-
+from _common import config, audio_format
 from downloader.playlist_download import download_playlist
 
 if len(sys.argv) < 3:
@@ -22,10 +21,10 @@ if not tracks:
     print("No tracks to download", file=sys.stderr)
     sys.exit(0)
 
-config_path = "/Users/jacob/harmoni/config.json"
-with open(config_path) as f:
-    config = json.load(f)
-
-audio_format = config.get("audio_format", "mp3")
 print(f"Downloading {len(tracks)} missing track(s) into '{playlist_name}'...")
-asyncio.run(download_playlist(playlist_name, tracks, output_dir, audio_format, 0, config))
+
+try:
+    asyncio.run(download_playlist(playlist_name, tracks, output_dir, audio_format, 0, config))
+except Exception as e:
+    print(f"Error: Download failed — {e}", file=sys.stderr)
+    sys.exit(1)
