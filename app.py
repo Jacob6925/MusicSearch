@@ -492,7 +492,8 @@ def update_playlist_worker(download_id, platform, playlist_id):
                 cmd = [sys.executable, str(harmoni_script), safe_name, str(DOWNLOAD_DIR)]
                 downloads[download_id]["cmd"] = " ".join(cmd)
                 stdin_payload = json.dumps([
-                    {"artist": t["artist"], "track": t["title"]} for t in to_download
+                    {"artist": t["artist"], "track": t["title"], "duration_ms": t.get("duration_ms", 0)}
+                    for t in to_download
                 ])
                 proc = subprocess.Popen(
                     cmd, stdin=subprocess.PIPE, stdout=log_file, stderr=subprocess.STDOUT, text=True,
@@ -540,7 +541,7 @@ def api_playlist_update(platform, playlist_id):
     return jsonify({"download_id": download_id, "status": "queued"})
 
 
-def download_worker(download_id, platform, title, artist, url):
+def download_worker(download_id, platform, title, artist, url, duration_ms=0):
     log_path = DOWNLOAD_DIR / f".dl_{download_id}.log"
     try:
         downloads[download_id]["status"] = "downloading"
@@ -550,7 +551,7 @@ def download_worker(download_id, platform, title, artist, url):
             cmd = [GAMDL, url, "-o", str(DOWNLOAD_DIR), "--config-path", GAMDL_CONFIG]
         else:
             harmoni_script = PROJECT_ROOT / "scripts" / "harmoni" / "download.py"
-            cmd = [sys.executable, str(harmoni_script), artist, title, str(DOWNLOAD_DIR)]
+            cmd = [sys.executable, str(harmoni_script), artist, title, str(DOWNLOAD_DIR), str(duration_ms)]
         downloads[download_id]["cmd"] = " ".join(cmd)
 
         with open(log_path, "w") as log_file:
@@ -583,6 +584,7 @@ def api_download():
     title = data.get("title", "")
     artist = data.get("artist", "")
     url = data.get("url", "")
+    duration_ms = data.get("duration_ms", 0)
 
     if not title or not artist:
         return jsonify({"error": "Missing title or artist"}), 400
@@ -597,7 +599,7 @@ def api_download():
 
     thread = threading.Thread(
         target=download_worker,
-        args=(download_id, platform, title, artist, url),
+        args=(download_id, platform, title, artist, url, duration_ms),
         daemon=True,
     )
     thread.start()

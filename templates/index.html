@@ -283,6 +283,7 @@
                         title: track.title,
                         artist: track.artist,
                         url: track.url,
+                        duration_ms: track.duration_ms || 0,
                     }),
                 });
                 const data = await resp.json();
