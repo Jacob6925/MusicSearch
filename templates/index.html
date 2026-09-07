@@ -653,6 +653,7 @@
         });
 
         function pollPlaylistUpdate(downloadId, pl) {
+            let updatingShown = false;
             const interval = setInterval(async () => {
                 try {
                     const resp = await fetch(`/api/download/${downloadId}`);
@@ -669,9 +670,9 @@
                         clearInterval(interval);
                         showPmStatus('error', `Failed: ${escHtml(data.error || 'Unknown error')}`);
                         await loadPlaylistManager();
-                    } else if (data.log_tail) {
-                        const last = data.log_tail.trim().split('\n').pop() || '';
-                        showPmStatus('downloading', `Updating <strong>${escHtml(pl.title)}</strong>… <span class="ps-log">${escHtml(last)}</span>`);
+                    } else if (data.log_tail && !updatingShown) {
+                        updatingShown = true;
+                        showPmStatus('downloading', `Updating <strong>${escHtml(pl.title)}</strong>…`);
                     }
                 } catch (_) {
                     clearInterval(interval);

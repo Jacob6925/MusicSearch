@@ -50,6 +50,15 @@ def _resolve_gamdl_config() -> str:
 
 GAMDL_CONFIG = _resolve_gamdl_config()
 
+
+def apple_music_is_configured() -> bool:
+    """Whether gamdl is installed and has a usable Apple Music cookie/config setup."""
+    gamdl_ok = bool(GAMDL) and (shutil.which(GAMDL) is not None or os.access(GAMDL, os.X_OK))
+    cookies_ok = _COOKIES_PATH.exists() and _COOKIES_PATH.stat().st_size > 0
+    config_ok = _GAMDL_CONFIG_TEMPLATE.exists() and _GAMDL_CONFIG_TEMPLATE.stat().st_size > 0
+    return gamdl_ok and cookies_ok and config_ok
+
+
 downloads = {}
 
 
@@ -220,7 +229,7 @@ def api_search():
 @app.route("/api/status")
 def api_status():
     return jsonify({
-        "apple_music": True,
+        "apple_music": apple_music_is_configured(),
         "spotify": bool(SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET),
     })
 
@@ -336,11 +345,83 @@ def api_playlist_info():
         return jsonify({"error": str(e)}), 500
 
 
+def download_spotify_tracks(download_id, tracks, folder, log_path):
+    """Download Spotify tracks preferring Apple Music (exact ISRC match, then
+    fuzzy title/artist/duration match) and falling back to YouTube via harmoni
+    for any track with no confident Apple Music match. Appends progress to
+    log_path and returns a combined returncode (0 = both stages succeeded)."""
+    matched, unmatched = [], list(tracks)
+
+    if tracks and apple_music_is_configured():
+        match_script = PROJECT_ROOT / "scripts" / "apple" / "match_tracks.py"
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(match_script)],
+                input=json.dumps(tracks), capture_output=True, text=True, timeout=600,
+            )
+            with open(log_path, "a") as log_file:
+                log_file.write("--- Matching tracks against Apple Music ---\n")
+                if proc.stderr:
+                    log_file.write(proc.stderr)
+            result = json.loads(proc.stdout)
+            matched = result.get("matched", [])
+            unmatched = result.get("unmatched", [])
+        except Exception as e:
+            with open(log_path, "a") as log_file:
+                log_file.write(f"Apple Music matching failed, falling back to YouTube for all tracks: {e}\n")
+            matched, unmatched = [], list(tracks)
+
+    returncode = 0
+
+    if matched:
+        cmd = [GAMDL, *[t["apple_url"] for t in matched], "-o", str(folder), "--config-path", GAMDL_CONFIG]
+        downloads[download_id]["cmd"] = " ".join(cmd)
+        with open(log_path, "a") as log_file:
+            log_file.write(f"\n--- Downloading {len(matched)} track(s) from Apple Music ---\n")
+            log_file.flush()
+            proc = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT)
+            downloads[download_id]["pid"] = proc.pid
+            try:
+                rc = proc.wait(timeout=7200)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                raise
+            if rc != 0:
+                returncode = rc
+
+    if unmatched:
+        harmoni_script = PROJECT_ROOT / "scripts" / "harmoni" / "tracks_download.py"
+        cmd = [sys.executable, str(harmoni_script), folder.name, str(DOWNLOAD_DIR)]
+        downloads[download_id]["cmd"] = " ".join(cmd)
+        stdin_payload = json.dumps([
+            {"artist": t["artist"], "track": t["title"], "duration_ms": t.get("duration_ms", 0)}
+            for t in unmatched
+        ])
+        with open(log_path, "a") as log_file:
+            log_file.write(f"\n--- Downloading {len(unmatched)} track(s) from YouTube ---\n")
+            log_file.flush()
+            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=log_file, stderr=subprocess.STDOUT, text=True)
+            downloads[download_id]["pid"] = proc.pid
+            proc.stdin.write(stdin_payload)
+            proc.stdin.close()
+            try:
+                rc = proc.wait(timeout=7200)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                raise
+            if rc != 0:
+                returncode = rc
+
+    return returncode
+
+
 def playlist_download_worker(download_id, platform, url, playlist_id, playlist_name):
     log_path = DOWNLOAD_DIR / f".dl_{download_id}.log"
     safe_name = safe_playlist_name(playlist_name)
     playlist_dir = DOWNLOAD_DIR / safe_name
     playlist_dir.mkdir(parents=True, exist_ok=True)
+    info = None
+    proc = None
 
     try:
         downloads[download_id]["status"] = "downloading"
@@ -348,19 +429,21 @@ def playlist_download_worker(download_id, platform, url, playlist_id, playlist_n
 
         if platform == "apple":
             cmd = [GAMDL, url, "-o", str(playlist_dir), "--config-path", GAMDL_CONFIG]
+            downloads[download_id]["cmd"] = " ".join(cmd)
+            with open(log_path, "w") as log_file:
+                proc = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT)
+                downloads[download_id]["pid"] = proc.pid
+                returncode = proc.wait(timeout=7200)
         else:
-            harmoni_script = PROJECT_ROOT / "scripts" / "harmoni" / "playlist_download.py"
-            cmd = [sys.executable, str(harmoni_script), playlist_id, safe_name, str(DOWNLOAD_DIR)]
-        downloads[download_id]["cmd"] = " ".join(cmd)
-        with open(log_path, "w") as log_file:
-            proc = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT)
-            downloads[download_id]["pid"] = proc.pid
-            returncode = proc.wait(timeout=7200)
+            info = fetch_full_playlist_info(platform, playlist_id)
+            open(log_path, "w").close()
+            returncode = download_spotify_tracks(download_id, info["tracks"], playlist_dir, log_path)
 
         if returncode == 0:
             downloads[download_id]["status"] = "done"
             try:
-                info = fetch_full_playlist_info(platform, playlist_id)
+                if info is None:
+                    info = fetch_full_playlist_info(platform, playlist_id)
                 playlist_store.add_playlist({
                     "id": playlist_id,
                     "platform": platform,
@@ -376,7 +459,8 @@ def playlist_download_worker(download_id, platform, url, playlist_id, playlist_n
         else:
             _fail_on_returncode(download_id, returncode, log_path)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        if proc is not None:
+            proc.kill()
         downloads[download_id]["status"] = "error"
         downloads[download_id]["error"] = "Timed out after 2 hours"
     except Exception as e:
@@ -441,6 +525,7 @@ def api_playlist_view(platform, playlist_id):
 def update_playlist_worker(download_id, platform, playlist_id):
     entry = playlist_store.get_playlist(platform, playlist_id)
     log_path = DOWNLOAD_DIR / f".dl_{download_id}.log"
+    proc = None
     try:
         downloads[download_id]["status"] = "downloading"
         downloads[download_id]["log"] = str(log_path)
@@ -475,33 +560,20 @@ def update_playlist_worker(download_id, platform, playlist_id):
             downloads[download_id]["downloaded_count"] = 0
             return
 
-        safe_name = folder.name
-        with open(log_path, "w") as log_file:
-            if platform == "apple":
-                cmd = [
-                    GAMDL, *[t["url"] for t in to_download],
-                    "-o", str(folder),
-                    "--config-path", GAMDL_CONFIG,
-                ]
-                downloads[download_id]["cmd"] = " ".join(cmd)
+        if platform == "apple":
+            cmd = [
+                GAMDL, *[t["url"] for t in to_download],
+                "-o", str(folder),
+                "--config-path", GAMDL_CONFIG,
+            ]
+            downloads[download_id]["cmd"] = " ".join(cmd)
+            with open(log_path, "w") as log_file:
                 proc = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT)
                 downloads[download_id]["pid"] = proc.pid
                 returncode = proc.wait(timeout=7200)
-            else:
-                harmoni_script = PROJECT_ROOT / "scripts" / "harmoni" / "tracks_download.py"
-                cmd = [sys.executable, str(harmoni_script), safe_name, str(DOWNLOAD_DIR)]
-                downloads[download_id]["cmd"] = " ".join(cmd)
-                stdin_payload = json.dumps([
-                    {"artist": t["artist"], "track": t["title"], "duration_ms": t.get("duration_ms", 0)}
-                    for t in to_download
-                ])
-                proc = subprocess.Popen(
-                    cmd, stdin=subprocess.PIPE, stdout=log_file, stderr=subprocess.STDOUT, text=True,
-                )
-                downloads[download_id]["pid"] = proc.pid
-                proc.stdin.write(stdin_payload)
-                proc.stdin.close()
-                returncode = proc.wait(timeout=7200)
+        else:
+            open(log_path, "w").close()
+            returncode = download_spotify_tracks(download_id, to_download, folder, log_path)
 
         if returncode == 0:
             downloads[download_id]["status"] = "done"
@@ -509,7 +581,8 @@ def update_playlist_worker(download_id, platform, playlist_id):
         else:
             _fail_on_returncode(download_id, returncode, log_path)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        if proc is not None:
+            proc.kill()
         downloads[download_id]["status"] = "error"
         downloads[download_id]["error"] = "Timed out after 2 hours"
     except Exception as e:

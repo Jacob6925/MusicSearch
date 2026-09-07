@@ -38,6 +38,7 @@ try:
             "duration_ms": track.get("duration_ms", 0),
             "release_date": album.get("release_date", ""),
             "explicit": bool(track.get("explicit", False)),
+            "isrc": track.get("external_ids", {}).get("isrc", ""),
         })
 
     result = {
