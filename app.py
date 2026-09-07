@@ -7,6 +7,7 @@ import base64
 import shutil
 import subprocess
 import threading
+import unicodedata
 import uuid
 from pathlib import Path
 import requests
@@ -302,30 +303,96 @@ def safe_playlist_name(name):
 
 
 def normalize_name(s):
-    return re.sub(r'[^a-z0-9]+', '', (s or "").lower())
+    # Strip accents regardless of whether the source string is precomposed (NFC,
+    # typical of API/JSON text) or decomposed (NFD, what macOS returns for filenames) —
+    # otherwise e.g. "Bailão" from an API and "Bailão" read back via os.listdir()
+    # normalize to different strings and never match.
+    s = unicodedata.normalize('NFKD', (s or "").lower())
+    s = ''.join(c for c in s if not unicodedata.combining(c))
+    return re.sub(r'[^a-z0-9]+', '', s)
+
+
+def normalize_words(s):
+    s = unicodedata.normalize('NFKD', (s or "").lower())
+    s = ''.join(c for c in s if not unicodedata.combining(c))
+    return [w for w in re.split(r'[^a-z0-9]+', s) if w]
+
+
+# Connector words in a title's "(feat. X)"/"(with X)" collaborator annotation —
+# the collaborator's name is usually folded into the filename via the artist
+# list, but these linking words themselves are not, e.g. title "One Kiss (with
+# Dua Lipa)" downloaded as "Calvin Harris & Dua Lipa - One Kiss.m4a".
+_TITLE_FILLER_WORDS = {"feat", "featuring", "ft", "with"}
+
+
+def title_words_for_matching(title):
+    return [w for w in normalize_words(title) if w not in _TITLE_FILLER_WORDS]
 
 
 def primary_artist(artist):
-    return re.split(r',|&| feat\.?| ft\.?', artist or "", flags=re.IGNORECASE)[0].strip()
+    # Drop parenthetical asides (e.g. "Olly Alexander (Years & Years)") before
+    # splitting on separators, so they don't get chopped mid-name by the "&"/","
+    # split below.
+    artist = re.sub(r'\([^)]*\)', '', artist or "")
+    return re.split(r',|&| feat\.?| ft\.?', artist, flags=re.IGNORECASE)[0].strip()
+
+
+def _title_artist_match(title_words, artist_words, stem_words):
+    # Word-based (not contiguous-substring) matching: a real filename often
+    # inserts "(feat. X)" or "[Remix]" between words that are adjacent in the
+    # playlist's title, e.g. "In My Mind (feat. Georgi Kay) [Axwell Radio Edit]"
+    # vs. the title "In My Mind - Axwell Radio Edit".
+    return bool(title_words) and all(w in stem_words for w in title_words) and all(w in stem_words for w in artist_words)
 
 
 def local_track_exists(folder, artist, title):
     if not os.path.isdir(folder):
         return False
-    norm_title = normalize_name(title)
-    norm_artist = normalize_name(primary_artist(artist))
-    if not norm_title:
+    title_words = title_words_for_matching(title)
+    artist_words = normalize_words(primary_artist(artist))
+    if not title_words:
         return False
     for fname in os.listdir(folder):
-        stem = os.path.splitext(fname)[0]
-        norm_stem = normalize_name(stem)
-        if norm_title in norm_stem and (not norm_artist or norm_artist in norm_stem):
+        stem_words = set(normalize_words(os.path.splitext(fname)[0]))
+        if _title_artist_match(title_words, artist_words, stem_words):
             return True
     return False
 
 
 def missing_tracks(folder, tracks):
     return [t for t in tracks if not local_track_exists(folder, t["artist"], t["title"])]
+
+
+AUDIO_EXTENSIONS = {".m4a", ".mp3", ".flac", ".wav", ".aac", ".ogg", ".opus", ".wma"}
+
+
+def local_only_files(folder, tracks):
+    """Local audio files in `folder` that don't match any track in `tracks`."""
+    if not os.path.isdir(folder):
+        return []
+    track_word_pairs = [
+        (title_words_for_matching(t["title"]), normalize_words(primary_artist(t["artist"])))
+        for t in tracks
+    ]
+    result = []
+    for fname in sorted(os.listdir(folder)):
+        stem, ext = os.path.splitext(fname)
+        if ext.lower() not in AUDIO_EXTENSIONS:
+            continue
+        stem_words = set(normalize_words(stem))
+        if any(_title_artist_match(tw, aw, stem_words) for tw, aw in track_word_pairs):
+            continue
+        result.append(fname)
+    return result
+
+
+def parse_local_filename(fname):
+    """Best-effort split of a "Artist - Title.ext" filename for display."""
+    stem = os.path.splitext(fname)[0]
+    if " - " in stem:
+        artist, title = stem.split(" - ", 1)
+        return artist.strip(), title.strip()
+    return "", stem.strip()
 
 
 @app.route("/api/playlist/info")
@@ -517,6 +584,13 @@ def api_playlist_view(platform, playlist_id):
         return jsonify({"error": "Playlist not found in manager"}), 404
     try:
         info = fetch_full_playlist_info(platform, playlist_id)
+        folder = entry.get("folder", "")
+        for t in info["tracks"]:
+            t["local"] = local_track_exists(folder, t["artist"], t["title"])
+        info["local_only"] = []
+        for fname in local_only_files(folder, info["tracks"]):
+            artist, title = parse_local_filename(fname)
+            info["local_only"].append({"artist": artist, "title": title, "filename": fname})
         return jsonify(info)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -577,7 +651,11 @@ def update_playlist_worker(download_id, platform, playlist_id):
 
         if returncode == 0:
             downloads[download_id]["status"] = "done"
-            downloads[download_id]["downloaded_count"] = len(to_download)
+            # Report tracks actually confirmed on disk, not just attempted —
+            # a per-track downloader can silently fail on one track while still
+            # exiting 0 overall.
+            still_missing = missing_tracks(str(folder), to_download)
+            downloads[download_id]["downloaded_count"] = len(to_download) - len(still_missing)
         else:
             _fail_on_returncode(download_id, returncode, log_path)
     except subprocess.TimeoutExpired:
@@ -688,7 +766,12 @@ def api_download_status(download_id):
     if info.get("status") == "downloading":
         log_path = info.get("log", "")
         if log_path and os.path.exists(log_path):
-            info["log_tail"] = _tail_log(log_path, 5)
+            if info.get("type") == "playlist_update":
+                # Update status is a static message once downloading starts —
+                # the frontend only checks this for truthiness, so avoid reading the file.
+                info["log_tail"] = os.path.getsize(log_path) > 0
+            else:
+                info["log_tail"] = _tail_log(log_path, 5)
     return jsonify(info)
 
 

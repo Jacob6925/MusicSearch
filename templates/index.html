@@ -87,6 +87,7 @@
                     <th class="col-dur">Time</th>
                     <th class="col-year">Year</th>
                     <th class="col-src">Source</th>
+                    <th class="col-status">Status</th>
                     <th class="col-dl"></th>
                 </tr>
             </thead>
@@ -191,6 +192,7 @@
         function renderResults(results) {
             lastResults = results;
             resultsDiv.classList.remove('hidden');
+            resultsDiv.classList.remove('show-status');
             const tbody = document.getElementById('results-body');
             tbody.innerHTML = results.map((r, i) => `
                 <tr class="result-row ${r.platform}">
@@ -215,6 +217,72 @@
                     </button></td>
                 </tr>
             `).join('');
+        }
+
+        // Renders a playlist's remote tracks alongside local-disk state: which are
+        // downloaded already, which are on the playlist but missing, and which
+        // local files aren't on the playlist at all (grouped after, order preserved).
+        function renderPlaylistView(data) {
+            const tracks = data.tracks;
+            lastResults = tracks;
+            resultsDiv.classList.remove('hidden');
+            resultsDiv.classList.add('show-status');
+            const tbody = document.getElementById('results-body');
+
+            const trackRows = tracks.map((r, i) => `
+                <tr class="result-row ${r.platform} ${r.local ? 'status-both' : 'status-missing'}">
+                    <td class="col-num">${i + 1}</td>
+                    <td class="col-art">
+                        <div class="art-wrap">
+                            ${r.artwork ? `<img src="${r.artwork}" alt="" loading="lazy">` : ''}
+                            ${r.preview_url ? `<button class="play-btn" data-url="${r.preview_url}" onclick="togglePlay(this)">
+                                <svg class="play-icon" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
+                                <svg class="pause-icon hidden" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+                            </button>` : ''}
+                        </div>
+                    </td>
+                    <td class="col-title" title="${r.title}">${r.title}${r.explicit ? ' <span class="explicit-badge">E</span>' : ''}</td>
+                    <td class="col-artist" title="${r.artist}">${r.artist}</td>
+                    <td class="col-album" title="${r.album}">${r.album}</td>
+                    <td class="col-dur">${formatDuration(r.duration_ms)}</td>
+                    <td class="col-year">${r.release_date ? r.release_date.substring(0, 4) : ''}</td>
+                    <td class="col-src"><span class="platform-badge ${r.platform}">${r.platform === 'apple' ? 'Apple' : 'Spotify'}</span></td>
+                    <td class="col-status">${r.local
+                        ? '<span class="status-badge status-badge-both">On device</span>'
+                        : '<span class="status-badge status-badge-missing">Missing</span>'}</td>
+                    <td class="col-dl">${r.local
+                        ? '<span class="local-check" title="Already downloaded"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg></span>'
+                        : `<button class="dl-btn" onclick="startDownload(this, ${i})" data-index="${i}" title="Download">
+                            <svg class="dl-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                        </button>`}
+                    </td>
+                </tr>
+            `).join('');
+
+            const localOnly = data.local_only || [];
+            let dividerAndLocalRows = '';
+            if (localOnly.length > 0) {
+                dividerAndLocalRows = `
+                    <tr class="section-divider">
+                        <td colspan="10">Local files not in this playlist (${localOnly.length})</td>
+                    </tr>
+                ` + localOnly.map(l => `
+                    <tr class="result-row local-only-row status-local-only">
+                        <td class="col-num"></td>
+                        <td class="col-art"></td>
+                        <td class="col-title" title="${escHtml(l.title)}">${escHtml(l.title)}</td>
+                        <td class="col-artist" title="${escHtml(l.artist)}">${escHtml(l.artist)}</td>
+                        <td class="col-album"></td>
+                        <td class="col-dur"></td>
+                        <td class="col-year"></td>
+                        <td class="col-src"><span class="platform-badge local">Local</span></td>
+                        <td class="col-status"><span class="status-badge status-badge-local-only">Local only</span></td>
+                        <td class="col-dl"></td>
+                    </tr>
+                `).join('');
+            }
+
+            tbody.innerHTML = trackRows + dividerAndLocalRows;
         }
 
         function togglePlay(btn) {
@@ -612,9 +680,15 @@
                     pmDropdown.classList.add('hidden');
                     errorDiv.classList.add('hidden');
                     emptyState.classList.add('hidden');
-                    resultsInfo.textContent = `${data.track_count} songs in "${data.title}" (${formatTotalDuration(data.duration_ms)})`;
+                    const localCount = data.tracks.filter(t => t.local).length;
+                    const missingCount = data.tracks.length - localCount;
+                    const localOnlyCount = (data.local_only || []).length;
+                    const parts = [`${localCount} on device`];
+                    if (missingCount) parts.push(`${missingCount} missing`);
+                    if (localOnlyCount) parts.push(`${localOnlyCount} local-only`);
+                    resultsInfo.textContent = `${data.track_count} songs in "${data.title}" (${formatTotalDuration(data.duration_ms)}) — ${parts.join(', ')}`;
                     resultsInfo.classList.remove('hidden');
-                    renderResults(data.tracks);
+                    renderPlaylistView(data);
                 } catch (_) {
                     showPmStatus('error', 'Request failed');
                 } finally {
