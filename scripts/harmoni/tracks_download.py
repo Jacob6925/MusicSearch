@@ -9,7 +9,7 @@ import json
 import os
 import sys
 
-from _common import config, audio_format
+from _common import config
 from _yt_download import download_many
 
 if len(sys.argv) < 3:
@@ -30,7 +30,7 @@ os.makedirs(playlist_dir, exist_ok=True)
 print(f"Downloading {len(tracks)} missing track(s) into '{playlist_name}'...")
 
 try:
-    asyncio.run(download_many(tracks, playlist_dir, audio_format, config))
+    asyncio.run(download_many(tracks, playlist_dir, config))
 except Exception as e:
     print(f"Error: Download failed — {e}", file=sys.stderr)
     sys.exit(1)
