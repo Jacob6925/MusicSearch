@@ -14,6 +14,7 @@ import requests
 from dotenv import load_dotenv
 from flask import Flask, render_template, request, jsonify
 
+import folder_picker
 import playlist_store
 
 load_dotenv()
@@ -64,6 +65,7 @@ downloads = {}
 
 
 def _tail_log(path, lines=20):
+    """Last `lines` lines of a log file. Server-side debugging only — never sent to the UI."""
     try:
         with open(path) as f:
             return "".join(f.readlines()[-lines:])
@@ -280,6 +282,61 @@ def api_status():
         "default_save_dir": str(DOWNLOAD_DIR),
         "home_dir": str(Path.home()),
     })
+
+
+def resolve_save_dir(raw):
+    """Validate a client-chosen destination folder for single songs. Empty/None
+    means the default (DOWNLOAD_DIR). Returns a Path; raises ValueError with a
+    UI-safe message if it isn't an absolute, existing, writable directory."""
+    if not raw or not str(raw).strip():
+        return DOWNLOAD_DIR
+    path = Path(str(raw).strip()).expanduser()
+    if not path.is_absolute():
+        raise ValueError("Enter a full folder path.")
+    if not path.is_dir():
+        raise ValueError("That folder doesn't exist.")
+    if not os.access(path, os.W_OK):
+        raise ValueError("That folder isn't writable.")
+    return path
+
+
+_folder_dialog_lock = threading.Lock()
+
+
+@app.route("/api/choose-folder", methods=["POST"])
+def api_choose_folder():
+    """Opens the OS-native folder chooser on this machine and returns the pick."""
+    data = request.get_json(silent=True) or {}
+    try:
+        start = resolve_save_dir(data.get("start"))
+    except ValueError:
+        start = DOWNLOAD_DIR
+    if not _folder_dialog_lock.acquire(blocking=False):
+        return jsonify({"error": "A folder dialog is already open."}), 409
+    try:
+        chosen = folder_picker.choose_folder(start)
+    except folder_picker.FolderPickerError as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        _folder_dialog_lock.release()
+    if chosen is None:
+        return jsonify({"cancelled": True})
+    try:
+        return jsonify({"path": str(resolve_save_dir(chosen))})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/validate-folder", methods=["POST"])
+def api_validate_folder():
+    """Checks a typed folder path (fallback when no native dialog is available)."""
+    data = request.get_json(silent=True) or {}
+    if not str(data.get("path") or "").strip():
+        return jsonify({"error": "Enter a folder path."}), 400
+    try:
+        return jsonify({"path": str(resolve_save_dir(data.get("path")))})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
 
 
 def parse_playlist_url(url):

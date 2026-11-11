@@ -52,6 +52,20 @@
             </div>
         </div>
 
+        <div class="save-dir">
+            <div class="save-dir-row">
+                <span class="save-dir-label">Save songs to:</span>
+                <span id="save-dir-path" class="save-dir-path"></span>
+                <button type="button" id="save-dir-choose" class="kind-btn">Choose…</button>
+                <button type="button" id="save-dir-reset" class="kind-btn hidden">Reset</button>
+            </div>
+            <div id="save-dir-fallback" class="save-dir-row hidden">
+                <input type="text" id="save-dir-input" placeholder="Type or paste a folder path…" autocomplete="off" spellcheck="false">
+                <button type="button" id="save-dir-apply" class="kind-btn">Use this folder</button>
+            </div>
+            <div id="save-dir-msg" class="save-dir-msg hidden"></div>
+        </div>
+
         <div class="playlist-section">
             <button id="paste-playlist-btn" class="paste-playlist-btn">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
@@ -366,6 +380,7 @@
                         artist: track.artist,
                         url: track.url,
                         duration_ms: track.duration_ms || 0,
+                        save_dir: songSaveDir,
                     }),
                 });
                 const data = await resp.json();
@@ -413,6 +428,108 @@
         }
 
         searchInput.focus();
+
+        // ── Song save folder ──────────────────────────────────────────────
+        // Where individual songs (search-result Download button and pasted song
+        // links) are saved. null = the server's default folder. Playlists are
+        // not affected. Resets to the default on every page load.
+        const saveDirPath = document.getElementById('save-dir-path');
+        const saveDirChooseBtn = document.getElementById('save-dir-choose');
+        const saveDirResetBtn = document.getElementById('save-dir-reset');
+        const saveDirFallback = document.getElementById('save-dir-fallback');
+        const saveDirInput = document.getElementById('save-dir-input');
+        const saveDirApplyBtn = document.getElementById('save-dir-apply');
+        const saveDirMsg = document.getElementById('save-dir-msg');
+
+        let songSaveDir = null;
+        let defaultSaveDir = '';
+        let homeDir = '';
+
+        function displayPath(p) {
+            if (homeDir && p.startsWith(homeDir) && (p.length === homeDir.length || '/\\'.includes(p[homeDir.length]))) {
+                return '~' + p.slice(homeDir.length);
+            }
+            return p;
+        }
+
+        function renderSaveDir() {
+            const full = songSaveDir || defaultSaveDir;
+            saveDirPath.textContent = full ? displayPath(full) : '';
+            saveDirPath.title = full;
+            saveDirResetBtn.classList.toggle('hidden', !songSaveDir);
+        }
+
+        function setSaveDirMsg(text) {
+            saveDirMsg.textContent = text || '';
+            saveDirMsg.classList.toggle('hidden', !text);
+        }
+
+        function setSongSaveDir(path) {
+            songSaveDir = path === defaultSaveDir ? null : path;
+            saveDirFallback.classList.add('hidden');
+            saveDirInput.value = '';
+            setSaveDirMsg('');
+            renderSaveDir();
+        }
+
+        fetch('/api/status')
+            .then(r => r.json())
+            .then(status => {
+                defaultSaveDir = status.default_save_dir || '';
+                homeDir = status.home_dir || '';
+                renderSaveDir();
+            })
+            .catch(() => {});
+
+        saveDirChooseBtn.addEventListener('click', async () => {
+            saveDirChooseBtn.disabled = true;
+            saveDirChooseBtn.textContent = 'Waiting for folder dialog…';
+            setSaveDirMsg('');
+            try {
+                const resp = await fetch('/api/choose-folder', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ start: songSaveDir }),
+                });
+                const data = await resp.json();
+                if (data.path) {
+                    setSongSaveDir(data.path);
+                } else if (data.error) {
+                    // No native dialog available (or it failed): let the user type a path instead.
+                    setSaveDirMsg(data.error);
+                    saveDirFallback.classList.remove('hidden');
+                    saveDirInput.focus();
+                }
+                // data.cancelled: leave the selection unchanged.
+            } catch (_) {
+                setSaveDirMsg('Could not reach server');
+            } finally {
+                saveDirChooseBtn.disabled = false;
+                saveDirChooseBtn.textContent = 'Choose…';
+            }
+        });
+
+        async function applyTypedSaveDir() {
+            const path = saveDirInput.value.trim();
+            try {
+                const resp = await fetch('/api/validate-folder', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ path }),
+                });
+                const data = await resp.json();
+                if (data.path) setSongSaveDir(data.path);
+                else setSaveDirMsg(data.error || 'That folder can’t be used.');
+            } catch (_) {
+                setSaveDirMsg('Could not reach server');
+            }
+        }
+        saveDirApplyBtn.addEventListener('click', applyTypedSaveDir);
+        saveDirInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); applyTypedSaveDir(); }
+        });
+
+        saveDirResetBtn.addEventListener('click', () => setSongSaveDir(null));
 
         // ── Playlist download ─────────────────────────────────────────────
         const pastePlBtn = document.getElementById('paste-playlist-btn');

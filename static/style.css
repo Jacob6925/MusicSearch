@@ -608,6 +608,85 @@ header h1 {
     padding-left: 0.1rem;
 }
 
+.save-dir {
+    margin-bottom: 0.75rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+
+.save-dir-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.82rem;
+    color: #a1a1aa;
+}
+
+.save-dir-path {
+    color: #e4e4e7;
+    word-break: break-all;
+}
+
+.save-dir-row input {
+    flex: 1;
+    min-width: 12rem;
+    background: #18181b;
+    border: 1px solid #27272a;
+    border-radius: 8px;
+    padding: 0.35rem 0.7rem;
+    color: #e4e4e7;
+    font-size: 0.82rem;
+    outline: none;
+    font-family: inherit;
+}
+
+.save-dir-row input:focus {
+    border-color: #52525b;
+}
+
+.save-dir-msg {
+    font-size: 0.82rem;
+    color: #ef4444;
+}
+
+.kind-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.link-kind-choice {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.82rem;
+    color: #a1a1aa;
+    padding-left: 0.1rem;
+}
+
+.kind-btn {
+    background: #18181b;
+    border: 1px solid #27272a;
+    color: #a1a1aa;
+    border-radius: 8px;
+    padding: 0.3rem 0.8rem;
+    font-size: 0.82rem;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.kind-btn:hover {
+    border-color: #52525b;
+    color: #e4e4e7;
+}
+
+.kind-btn.active {
+    border-color: #fc3c44;
+    color: #e4e4e7;
+}
+
 .pv-ok { color: #a1a1aa; }
 .pv-error { color: #ef4444; }
 .pv-loading { color: #71717a; }
