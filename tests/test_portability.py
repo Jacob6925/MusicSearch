@@ -70,6 +70,27 @@ class AppTests(unittest.TestCase):
         for key in ("apple_music", "spotify", "spotify_login", "default_save_dir", "home_dir"):
             self.assertIn(key, data)
 
+    def test_default_dir_must_be_chosen_then_persists(self):
+        a = self.app
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(a, "SETTINGS_PATH", Path(tmp) / "settings.json"):
+            c = a.app.test_client()
+            self.assertEqual(c.get("/api/status").get_json()["default_save_dir"], "")
+            r = c.post("/api/playlist/download", json={"url": "https://music.youtube.com/playlist?list=PLabc"})
+            self.assertEqual(r.status_code, 400)
+            self.assertIn("Choose a save folder", r.get_json()["error"])
+            self.assertEqual(c.post("/api/default-dir", json={"path": "relative/dir"}).status_code, 400)
+            music = Path(tmp) / "My Music"
+            music.mkdir()
+            self.assertEqual(c.post("/api/default-dir", json={"path": str(music)}).get_json()["path"], str(music))
+            # "restart": nothing cached in memory, only the settings file
+            self.assertEqual(c.get("/api/status").get_json()["default_save_dir"], str(music))
+            other = Path(tmp) / "Other"
+            other.mkdir()
+            c.post("/api/default-dir", json={"path": str(other)})
+            self.assertEqual(a.get_download_dir(), other)
+            other.rmdir()
+            self.assertIsNone(a.get_download_dir())  # folder deleted -> ask again
+
     def test_playlist_name_sanitised(self):
         self.assertEqual(self.app.safe_playlist_name("Mix: 2020?"), "Mix 2020")
 
@@ -80,7 +101,7 @@ class PlaylistStoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(playlist_store, "STORE_PATH", Path(tmp) / "playlists.json"):
                 playlist_store.add_playlist({"id": "1", "platform": "spotify", "title": "\U0001F9D8 Calm",
-                                             "folder": str(playlist_store.DOWNLOAD_DIR / "\U0001F9D8 Calm")})
+                                             "folder": str(Path(tmp) / "\U0001F9D8 Calm")})
                 got = playlist_store.get_playlist("spotify", "1")
                 self.assertEqual(got["title"], "\U0001F9D8 Calm")
                 self.assertTrue(Path(got["folder"]).is_absolute())

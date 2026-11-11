@@ -148,7 +148,12 @@ Mac:
 
 Your browser opens to **http://127.0.0.1:5050/**. If it doesn't, open that address yourself. Leave the terminal window open while you use the app; press `Ctrl + C` in it (or close it) to stop the app.
 
-Songs and playlists are saved to a `Music/MusicSearch` folder inside your home folder (for single songs you can pick a different folder in the app).
+The first time you open the app, a message asks you to choose the folder your music is saved in, then a folder window opens. That folder becomes your **default** and is remembered, even after you restart the app.
+
+At the top of the page, **Save to** shows where the next download will go:
+
+- **Change…** picks a different folder for the *next download only*. After that download succeeds, it goes back to your default. (If the download fails, the chosen folder stays so you can retry.)
+- **Set as default** appears while a different folder is selected. Click it to make that folder your new default.
 
 ---
 
@@ -160,7 +165,7 @@ When there are new changes, from inside the `MusicSearch` folder run:
 git pull
 ```
 
-then run the setup script again (step 4) to update the installed packages, and start the app as usual. Your `.env`, cookies and downloaded-playlist list are kept.
+then run the setup script again (step 4) to update the installed packages, and start the app as usual. Your `.env`, cookies, chosen save folder and downloaded-playlist list are kept.
 
 If downloads from YouTube suddenly start failing, update just the downloader by running the setup script again, which installs the newest `yt-dlp`.
 

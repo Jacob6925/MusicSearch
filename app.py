@@ -38,8 +38,45 @@ if SPOTIFY_CLIENT_ID:
 
 spotify_token_cache = {"token": None}
 
-DOWNLOAD_DIR = Path.home() / "Music" / "MusicSearch"
-DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+# The default download folder is chosen by the user on first run and remembered in
+# settings.json (next to this file). Until it is set, downloads are refused.
+SETTINGS_PATH = PROJECT_ROOT / "settings.json"
+_settings_lock = threading.Lock()
+
+
+def get_download_dir():
+    """The saved default download folder as a Path, or None if not chosen yet
+    (or if the saved folder no longer exists)."""
+    try:
+        data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+        folder = Path(str(data.get("download_dir") or "")).expanduser()
+    except (OSError, ValueError):
+        return None
+    return folder if str(folder) not in ("", ".") and folder.is_dir() else None
+
+
+def set_download_dir(folder):
+    with _settings_lock:
+        try:
+            data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        data["download_dir"] = str(folder)
+        tmp = SETTINGS_PATH.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        tmp.replace(SETTINGS_PATH)
+
+
+def require_download_dir():
+    folder = get_download_dir()
+    if folder is None:
+        raise ValueError("Choose a save folder first (use the Choose… button at the top).")
+    return folder
+
+
+def _log_path(download_id):
+    _TEMP_DIR.mkdir(exist_ok=True)
+    return _TEMP_DIR / f".dl_{download_id}.log"
 
 # Run gamdl through this same Python so it works inside the venv on any OS.
 GAMDL_CMD = [sys.executable, "-m", "gamdl"]
@@ -303,7 +340,7 @@ def api_status():
         "apple_music": apple_music_is_configured(),
         "spotify": bool(SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET),
         "spotify_login": appenv.spotify_logged_in(),
-        "default_save_dir": str(DOWNLOAD_DIR),
+        "default_save_dir": str(get_download_dir() or ""),
         "home_dir": str(Path.home()),
     })
 
@@ -345,10 +382,10 @@ def api_spotify_login():
 
 def resolve_save_dir(raw):
     """Validate a client-chosen destination folder for single songs. Empty/None
-    means the default (DOWNLOAD_DIR). Returns a Path; raises ValueError with a
+    means the saved default folder. Returns a Path; raises ValueError with a
     UI-safe message if it isn't an absolute, existing, writable directory."""
     if not raw or not str(raw).strip():
-        return DOWNLOAD_DIR
+        return require_download_dir()
     path = Path(str(raw).strip()).expanduser()
     if not path.is_absolute():
         raise ValueError("Enter a full folder path.")
@@ -369,7 +406,7 @@ def api_choose_folder():
     try:
         start = resolve_save_dir(data.get("start"))
     except ValueError:
-        start = DOWNLOAD_DIR
+        start = get_download_dir() or Path.home()
     if not _folder_dialog_lock.acquire(blocking=False):
         return jsonify({"error": "A folder dialog is already open."}), 409
     try:
@@ -396,6 +433,20 @@ def api_validate_folder():
         return jsonify({"path": str(resolve_save_dir(data.get("path")))})
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/default-dir", methods=["POST"])
+def api_set_default_dir():
+    """Save the folder all downloads go to (chosen on first run, changeable later)."""
+    data = request.get_json(silent=True) or {}
+    if not str(data.get("path") or "").strip():
+        return jsonify({"error": "Enter a folder path."}), 400
+    try:
+        folder = resolve_save_dir(data["path"])
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    set_download_dir(folder)
+    return jsonify({"path": str(folder)})
 
 
 def parse_playlist_url(url):
@@ -760,10 +811,10 @@ def download_youtube_tracks(download_id, tracks, folder, log_path):
             raise
 
 
-def playlist_download_worker(download_id, platform, url, playlist_id, playlist_name, track_count=None):
-    log_path = DOWNLOAD_DIR / f".dl_{download_id}.log"
+def playlist_download_worker(download_id, platform, url, playlist_id, playlist_name, base_dir, track_count=None):
+    log_path = _log_path(download_id)
     safe_name = safe_playlist_name(playlist_name)
-    playlist_dir = DOWNLOAD_DIR / safe_name
+    playlist_dir = Path(base_dir) / safe_name
     playlist_dir.mkdir(parents=True, exist_ok=True)
     info = None
     proc = None
@@ -834,6 +885,11 @@ def api_playlist_download():
     if not platform:
         return jsonify({"error": "Invalid playlist URL"}), 400
 
+    try:
+        base_dir = resolve_save_dir(data.get("save_dir"))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
     download_id = str(uuid.uuid4())[:8]
     downloads[download_id] = {
         "status": "queued",
@@ -847,18 +903,18 @@ def api_playlist_download():
         track_count = None
     thread = threading.Thread(
         target=playlist_download_worker,
-        args=(download_id, platform, url, playlist_id, playlist_name, track_count),
+        args=(download_id, platform, url, playlist_id, playlist_name, base_dir, track_count),
         daemon=True,
     )
     thread.start()
     return jsonify({"download_id": download_id, "status": "queued"})
 
 
-def song_download_worker(download_id, platform, song_id, dest_dir=DOWNLOAD_DIR):
+def song_download_worker(download_id, platform, song_id, dest_dir):
     """Download one song by link, through the same per-track paths a playlist's
     tracks take (Apple -> gamdl; Spotify -> Apple Music match with YouTube
     fallback; YouTube -> yt-dlp on the known video), straight into dest_dir."""
-    log_path = DOWNLOAD_DIR / f".dl_{download_id}.log"
+    log_path = _log_path(download_id)
     proc = None
     try:
         downloads[download_id]["status"] = "downloading"
@@ -962,7 +1018,7 @@ def api_playlist_view(platform, playlist_id):
 
 def update_playlist_worker(download_id, platform, playlist_id):
     entry = playlist_store.get_playlist(platform, playlist_id)
-    log_path = DOWNLOAD_DIR / f".dl_{download_id}.log"
+    log_path = _log_path(download_id)
     proc = None
     try:
         downloads[download_id]["status"] = "downloading"
@@ -971,7 +1027,9 @@ def update_playlist_worker(download_id, platform, playlist_id):
         info = fetch_full_playlist_info(platform, playlist_id)
         old_folder = Path(entry["folder"])
         new_safe_name = safe_playlist_name(info["title"])
-        new_folder = DOWNLOAD_DIR / new_safe_name
+        # Rename within the folder it already lives in, so changing the default folder
+        # later doesn't drag old playlists along.
+        new_folder = old_folder.parent / new_safe_name
 
         folder = old_folder
         if new_folder != old_folder:
@@ -1063,8 +1121,8 @@ def api_playlist_update(platform, playlist_id):
     return jsonify({"download_id": download_id, "status": "queued"})
 
 
-def download_worker(download_id, platform, title, artist, url, duration_ms=0, dest_dir=DOWNLOAD_DIR):
-    log_path = DOWNLOAD_DIR / f".dl_{download_id}.log"
+def download_worker(download_id, platform, title, artist, url, duration_ms, dest_dir):
+    log_path = _log_path(download_id)
     try:
         downloads[download_id]["status"] = "downloading"
         downloads[download_id]["log"] = str(log_path)

@@ -26,3 +26,5 @@ desktop.ini
 .idea/
 .vscode/
 .claude/
+/settings.json
+/settings.json.tmp

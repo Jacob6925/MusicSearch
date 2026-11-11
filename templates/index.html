@@ -54,10 +54,10 @@
 
         <div class="save-dir">
             <div class="save-dir-row">
-                <span class="save-dir-label">Save songs to:</span>
+                <span class="save-dir-label">Save to:</span>
                 <span id="save-dir-path" class="save-dir-path"></span>
                 <button type="button" id="save-dir-choose" class="kind-btn">Choose…</button>
-                <button type="button" id="save-dir-reset" class="kind-btn hidden">Reset</button>
+                <button type="button" id="save-dir-default" class="kind-btn hidden">Set as default</button>
             </div>
             <div id="save-dir-fallback" class="save-dir-row hidden">
                 <input type="text" id="save-dir-input" placeholder="Type or paste a folder path…" autocomplete="off" spellcheck="false">
@@ -411,6 +411,7 @@
         async function startDownload(btn, index) {
             const track = lastResults[index];
             if (!track) return;
+            const usedDir = activeSaveDir;
 
             btn.disabled = true;
             btn.classList.add('downloading');
@@ -426,7 +427,7 @@
                         artist: track.artist,
                         url: track.url,
                         duration_ms: track.duration_ms || 0,
-                        save_dir: songSaveDir,
+                        save_dir: usedDir,
                     }),
                 });
                 const data = await resp.json();
@@ -437,7 +438,7 @@
                     btn.title = data.error;
                     return;
                 }
-                pollDownload(btn, data.download_id);
+                pollDownload(btn, data.download_id, usedDir);
             } catch (e) {
                 btn.classList.remove('downloading');
                 btn.classList.add('dl-error');
@@ -446,7 +447,7 @@
             }
         }
 
-        function pollDownload(btn, downloadId) {
+        function pollDownload(btn, downloadId, usedDir) {
             const interval = setInterval(async () => {
                 try {
                     const resp = await fetch(`/api/download/${downloadId}`);
@@ -457,6 +458,7 @@
                         btn.classList.add('dl-done');
                         btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>';
                         btn.title = 'Downloaded';
+                        resetActiveDir(usedDir);
                     } else if (data.status === 'error') {
                         clearInterval(interval);
                         btn.classList.remove('downloading');
@@ -475,20 +477,22 @@
 
         searchInput.focus();
 
-        // ── Song save folder ──────────────────────────────────────────────
-        // Where individual songs (search-result Download button and pasted song
-        // links) are saved. null = the server's default folder. Playlists are
-        // not affected. Resets to the default on every page load.
+        // ── Save folder ───────────────────────────────────────────────────
+        // Two folders:
+        //  * default  - saved by the server (settings.json), survives restarts.
+        //  * active   - where the NEXT download goes. Change… sets it for one download:
+        //               once that download succeeds it snaps back to the default.
+        //               "Set as default" makes the active folder the saved default.
         const saveDirPath = document.getElementById('save-dir-path');
         const saveDirChooseBtn = document.getElementById('save-dir-choose');
-        const saveDirResetBtn = document.getElementById('save-dir-reset');
+        const saveDirDefaultBtn = document.getElementById('save-dir-default');
         const saveDirFallback = document.getElementById('save-dir-fallback');
         const saveDirInput = document.getElementById('save-dir-input');
         const saveDirApplyBtn = document.getElementById('save-dir-apply');
         const saveDirMsg = document.getElementById('save-dir-msg');
 
-        let songSaveDir = null;
         let defaultSaveDir = '';
+        let activeSaveDir = '';
         let homeDir = '';
 
         function displayPath(p) {
@@ -499,10 +503,12 @@
         }
 
         function renderSaveDir() {
-            const full = songSaveDir || defaultSaveDir;
-            saveDirPath.textContent = full ? displayPath(full) : '';
-            saveDirPath.title = full;
-            saveDirResetBtn.classList.toggle('hidden', !songSaveDir);
+            saveDirPath.textContent = activeSaveDir ? displayPath(activeSaveDir) : 'Not chosen yet';
+            saveDirPath.title = activeSaveDir;
+            const temporary = !!defaultSaveDir && activeSaveDir !== defaultSaveDir;
+            saveDirPath.classList.toggle('temporary', temporary);
+            saveDirDefaultBtn.classList.toggle('hidden', !temporary);
+            saveDirChooseBtn.textContent = activeSaveDir ? 'Change…' : 'Choose…';
         }
 
         function setSaveDirMsg(text) {
@@ -510,24 +516,58 @@
             saveDirMsg.classList.toggle('hidden', !text);
         }
 
-        function setSongSaveDir(path) {
-            songSaveDir = path === defaultSaveDir ? null : path;
+        // A download that used `usedDir` succeeded: go back to the default, unless the
+        // user has already picked a different folder for their next download.
+        function resetActiveDir(usedDir) {
+            if (defaultSaveDir && activeSaveDir === usedDir && activeSaveDir !== defaultSaveDir) {
+                activeSaveDir = defaultSaveDir;
+                renderSaveDir();
+            }
+        }
+
+        // Ask the server to remember `path` as the default (and make it active).
+        async function saveDefaultDir(path) {
+            const resp = await fetch('/api/default-dir', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ path }),
+            });
+            const data = await resp.json();
+            if (!data.path) {
+                setSaveDirMsg(data.error || 'That folder can’t be used.');
+                return false;
+            }
+            defaultSaveDir = activeSaveDir = data.path;
             saveDirFallback.classList.add('hidden');
             saveDirInput.value = '';
             setSaveDirMsg('');
             renderSaveDir();
+            return true;
         }
 
-        fetch('/api/status')
-            .then(r => r.json())
-            .then(status => {
-                defaultSaveDir = status.default_save_dir || '';
-                homeDir = status.home_dir || '';
-                renderSaveDir();
-            })
-            .catch(() => {});
+        // A folder was picked or typed. First time ever: it becomes the default.
+        // Afterwards: it is only the active folder for the next download.
+        async function useFolder(path) {
+            if (!defaultSaveDir) return saveDefaultDir(path);
+            const resp = await fetch('/api/validate-folder', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ path }),
+            });
+            const data = await resp.json();
+            if (!data.path) {
+                setSaveDirMsg(data.error || 'That folder can’t be used.');
+                return false;
+            }
+            activeSaveDir = data.path;
+            saveDirFallback.classList.add('hidden');
+            saveDirInput.value = '';
+            setSaveDirMsg('');
+            renderSaveDir();
+            return true;
+        }
 
-        saveDirChooseBtn.addEventListener('click', async () => {
+        async function chooseSaveDir() {
             saveDirChooseBtn.disabled = true;
             saveDirChooseBtn.textContent = 'Waiting for folder dialog…';
             setSaveDirMsg('');
@@ -535,37 +575,60 @@
                 const resp = await fetch('/api/choose-folder', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ start: songSaveDir }),
+                    body: JSON.stringify({ start: activeSaveDir || null }),
                 });
                 const data = await resp.json();
                 if (data.path) {
-                    setSongSaveDir(data.path);
+                    await useFolder(data.path);
                 } else if (data.error) {
                     // No native dialog available (or it failed): let the user type a path instead.
                     setSaveDirMsg(data.error);
                     saveDirFallback.classList.remove('hidden');
                     saveDirInput.focus();
+                } else if (!defaultSaveDir) {
+                    setSaveDirMsg('Choose a folder to save your music in before downloading.');
                 }
-                // data.cancelled: leave the selection unchanged.
             } catch (_) {
                 setSaveDirMsg('Could not reach server');
             } finally {
+                renderSaveDir();
                 saveDirChooseBtn.disabled = false;
-                saveDirChooseBtn.textContent = 'Choose…';
+            }
+        }
+
+        // First run (no default saved): tell the user with a browser notification,
+        // and only after they dismiss it open the folder chooser.
+        async function promptForFirstFolder() {
+            alert('Choose a folder to save your music in.\n\nPress OK, then pick a folder in the window that opens. MusicSearch will remember it.');
+            await chooseSaveDir();
+        }
+
+        function initSaveDir() {
+            return fetch('/api/status')
+                .then(r => r.json())
+                .then(status => {
+                    defaultSaveDir = activeSaveDir = status.default_save_dir || '';
+                    homeDir = status.home_dir || '';
+                    renderSaveDir();
+                    if (!defaultSaveDir) return promptForFirstFolder();
+                })
+                .catch(() => {});
+        }
+        initSaveDir();
+
+        saveDirChooseBtn.addEventListener('click', chooseSaveDir);
+
+        saveDirDefaultBtn.addEventListener('click', async () => {
+            try {
+                await saveDefaultDir(activeSaveDir);
+            } catch (_) {
+                setSaveDirMsg('Could not reach server');
             }
         });
 
         async function applyTypedSaveDir() {
-            const path = saveDirInput.value.trim();
             try {
-                const resp = await fetch('/api/validate-folder', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ path }),
-                });
-                const data = await resp.json();
-                if (data.path) setSongSaveDir(data.path);
-                else setSaveDirMsg(data.error || 'That folder can’t be used.');
+                await useFolder(saveDirInput.value.trim());
             } catch (_) {
                 setSaveDirMsg('Could not reach server');
             }
@@ -574,8 +637,6 @@
         saveDirInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') { e.preventDefault(); applyTypedSaveDir(); }
         });
-
-        saveDirResetBtn.addEventListener('click', () => setSongSaveDir(null));
 
         // ── Playlist download ─────────────────────────────────────────────
         const pastePlBtn = document.getElementById('paste-playlist-btn');
@@ -717,6 +778,7 @@
             if (!linkInfo) return;
             playlistDlBtn.disabled = true;
             playlistDlBtn.textContent = 'Starting…';
+            const usedDir = activeSaveDir;
 
             try {
                 const isSong = linkInfo.kind === 'song';
@@ -724,8 +786,8 @@
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify(isSong
-                        ? { url: linkInfo.url, save_dir: songSaveDir }
-                        : { url: linkInfo.url, playlist_name: linkInfo.title, track_count: linkInfo.track_count || 0 }),
+                        ? { url: linkInfo.url, save_dir: usedDir }
+                        : { url: linkInfo.url, playlist_name: linkInfo.title, track_count: linkInfo.track_count || 0, save_dir: usedDir }),
                 });
                 const data = await resp.json();
                 if (data.error) {
@@ -736,7 +798,7 @@
                 }
                 showPlaylistStatus('downloading', `Downloading <strong>${escHtml(linkInfo.title)}</strong>…`);
                 pollPlaylistDownload(data.download_id, linkInfo.title, isSong,
-                    displayPath(isSong ? (songSaveDir || defaultSaveDir) : defaultSaveDir));
+                    displayPath(usedDir), usedDir);
             } catch (_) {
                 showPlaylistStatus('error', 'Request failed');
                 playlistDlBtn.disabled = false;
@@ -758,7 +820,7 @@
             playlistStatusArea.classList.add('hidden');
         }
 
-        function pollPlaylistDownload(downloadId, title, isSong, destLabel) {
+        function pollPlaylistDownload(downloadId, title, isSong, destLabel, usedDir) {
             const interval = setInterval(async () => {
                 try {
                     const resp = await fetch(`/api/download/${downloadId}`);
@@ -768,6 +830,7 @@
                         showPlaylistStatus('done', `Downloaded <strong>${escHtml(title)}</strong> to ${escHtml(destLabel)}`);
                         playlistDlBtn.textContent = 'Download';
                         playlistDlBtn.disabled = !linkInfo;
+                        resetActiveDir(usedDir);
                         if (!isSong) loadPlaylistManager();
                     } else if (data.status === 'error') {
                         clearInterval(interval);

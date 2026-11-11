@@ -4,7 +4,9 @@ import threading
 from pathlib import Path
 
 STORE_PATH = Path(__file__).parent / "playlists.json"
-DOWNLOAD_DIR = Path.home() / "Music" / "MusicSearch"
+# Folders are stored as absolute paths. Entries written by older versions were
+# relative to this folder, so keep resolving those against it.
+LEGACY_DOWNLOAD_DIR = Path.home() / "Music" / "MusicSearch"
 _lock = threading.Lock()
 
 
@@ -12,21 +14,9 @@ def _key(platform, playlist_id):
     return f"{platform}:{playlist_id}"
 
 
-def _to_relative_folder(folder: str) -> str:
-    """Store only the playlist subfolder name so the record is machine-portable."""
-    p = Path(folder)
-    try:
-        return str(p.relative_to(DOWNLOAD_DIR))
-    except ValueError:
-        return str(p)
-
-
 def _resolve_folder(folder: str) -> str:
-    """Reconstruct the absolute folder path from a stored relative or absolute value."""
     p = Path(folder)
-    if p.is_absolute():
-        return str(p)
-    return str(DOWNLOAD_DIR / p)
+    return str(p if p.is_absolute() else LEGACY_DOWNLOAD_DIR / p)
 
 
 def _load():
@@ -44,15 +34,9 @@ def _load():
 
 
 def _save(data):
-    portable = {}
-    for key, entry in data.items():
-        e = dict(entry)
-        if "folder" in e:
-            e["folder"] = _to_relative_folder(e["folder"])
-        portable[key] = e
     tmp_path = STORE_PATH.with_suffix(".json.tmp")
     with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(portable, f, indent=2)
+        json.dump(data, f, indent=2)
     tmp_path.replace(STORE_PATH)
 
 
