@@ -145,14 +145,60 @@
             });
         });
 
-        fetch('/api/status')
-            .then(r => r.json())
-            .then(status => {
-                if (!status.spotify) {
-                    statusBanner.textContent = 'Spotify is not configured. Set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET environment variables to enable Spotify search.';
-                    statusBanner.classList.remove('hidden');
-                }
+        function showBanner(lines, withSpotifyButton) {
+            statusBanner.innerHTML = '';
+            lines.forEach(t => {
+                const d = document.createElement('div');
+                d.textContent = t;
+                statusBanner.appendChild(d);
             });
+            if (withSpotifyButton) {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.textContent = 'Connect Spotify';
+                btn.addEventListener('click', () => connectSpotify(btn));
+                statusBanner.appendChild(btn);
+            }
+            statusBanner.classList.toggle('hidden', lines.length === 0);
+        }
+
+        async function connectSpotify(btn) {
+            btn.disabled = true;
+            btn.textContent = 'Finish signing in in the browser tab that opened…';
+            try {
+                let r = await (await fetch('/api/spotify/login', { method: 'POST' })).json();
+                if (r.error) throw new Error(r.error);
+                while (r.status === 'waiting') {
+                    await new Promise(res => setTimeout(res, 2000));
+                    r = await (await fetch('/api/spotify/login')).json();
+                }
+                if (r.status === 'error') throw new Error(r.error || 'Spotify sign-in failed.');
+                loadStatusBanner();
+            } catch (e) {
+                btn.disabled = false;
+                btn.textContent = 'Connect Spotify';
+                alert(e.message || 'Spotify sign-in failed.');
+            }
+        }
+
+        function loadStatusBanner() {
+            fetch('/api/status')
+                .then(r => r.json())
+                .then(status => {
+                    const lines = [];
+                    if (!status.apple_music) {
+                        lines.push('Apple Music is not set up yet: save your Apple Music cookies as gamdl/cookies.txt (see the README), then restart the app.');
+                    }
+                    if (!status.spotify) {
+                        lines.push('Spotify is optional and not configured: add SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET to the .env file, then restart the app.');
+                    } else if (!status.spotify_login) {
+                        lines.push('Spotify downloads need a one-time sign-in.');
+                    }
+                    showBanner(lines, !!status.spotify && !status.spotify_login);
+                })
+                .catch(() => {});
+        }
+        loadStatusBanner();
 
         searchForm.addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -690,7 +736,7 @@
                 }
                 showPlaylistStatus('downloading', `Downloading <strong>${escHtml(linkInfo.title)}</strong>…`);
                 pollPlaylistDownload(data.download_id, linkInfo.title, isSong,
-                    isSong ? displayPath(songSaveDir || defaultSaveDir) : '~/Music/MusicSearch/');
+                    displayPath(isSong ? (songSaveDir || defaultSaveDir) : defaultSaveDir));
             } catch (_) {
                 showPlaylistStatus('error', 'Request failed');
                 playlistDlBtn.disabled = false;

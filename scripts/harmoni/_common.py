@@ -3,15 +3,53 @@ import os
 import sys
 from pathlib import Path
 
-HARMONI_PATH = Path(os.environ.get("HARMONI_PATH", Path.home() / "harmoni"))
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from appenv import find_harmoni_path  # noqa: E402
+
+# Never crash on a non-ASCII title just because the console is cp1252.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+
+try:  # so running a script by hand sees the same .env the app does
+    from dotenv import load_dotenv
+    load_dotenv(PROJECT_ROOT / ".env", encoding="utf-8-sig")
+except ImportError:
+    pass
+
+HARMONI_PATH = find_harmoni_path()
 sys.path.insert(0, str(HARMONI_PATH))
 
-try:
-    with open(HARMONI_PATH / "config.json") as f:
-        config = json.load(f)
-except FileNotFoundError:
-    print(f"Error: harmoni config not found at {HARMONI_PATH / 'config.json'}.", file=sys.stderr)
+
+def _load_config() -> dict:
+    for name in ("config.json", "config.json.example"):
+        path = HARMONI_PATH / name
+        if path.is_file():
+            with open(path, encoding="utf-8-sig") as f:
+                return json.load(f)
+    print(
+        f"Error: Harmoni is not installed at {HARMONI_PATH}. "
+        "Run the setup script again (setup.bat on Windows, setup.command on Mac).",
+        file=sys.stderr,
+    )
     sys.exit(1)
+
+
+config = _load_config()
+# The app's .env is the single place the Spotify Client ID lives.
+if os.environ.get("SPOTIFY_CLIENT_ID", "").strip():
+    config["spotify_client_id"] = os.environ["SPOTIFY_CLIENT_ID"].strip()
+config["spotify_redirect_uri"] = "http://127.0.0.1:8888/callback"
+# ffmpeg / yt-dlp are found through PATH (the app puts them there).
+config["ffmpeg_path"] = ""
+config["ytdlp_path"] = ""
+config["auto_cleanup"] = False
+config["auto_backup"] = False
 
 
 def spotify_track_to_dict(track: dict) -> dict:

@@ -8,7 +8,7 @@ import structlog
 structlog.configure(
     processors=[structlog.dev.ConsoleRenderer()],
     wrapper_class=structlog.BoundLogger,
-    logger_factory=structlog.PrintLoggerFactory(file=open("/dev/null", "w")),
+    logger_factory=structlog.PrintLoggerFactory(file=open(os.devnull, "w")),
 )
 
 from gamdl.api.apple_music import AppleMusicApi  # noqa: E402

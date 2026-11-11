@@ -9,44 +9,66 @@ import subprocess
 import threading
 import unicodedata
 import uuid
+import webbrowser
 from pathlib import Path
 import requests
 from dotenv import load_dotenv
 from flask import Flask, render_template, request, jsonify
 
+import appenv
 import folder_picker
+import pathsafe
 import playlist_store
 
-load_dotenv()
+PROJECT_ROOT = appenv.PROJECT_ROOT
+
+# Must run before anything launches a child process (UTF-8, PATH, ffmpeg).
+appenv.prepare_environment()
+
+# utf-8-sig so a .env saved by Windows Notepad (which may add a BOM) still works.
+load_dotenv(PROJECT_ROOT / ".env", encoding="utf-8-sig")
 
 app = Flask(__name__)
 
-SPOTIFY_CLIENT_ID = os.environ.get("SPOTIFY_CLIENT_ID", "")
-SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET", "")
+SPOTIFY_CLIENT_ID = os.environ.get("SPOTIFY_CLIENT_ID", "").strip()
+SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET", "").strip()
+# Harmoni's helper scripts read the Client ID from the environment too.
+if SPOTIFY_CLIENT_ID:
+    os.environ["SPOTIFY_CLIENT_ID"] = SPOTIFY_CLIENT_ID
 
 spotify_token_cache = {"token": None}
 
-PROJECT_ROOT = Path(__file__).parent
 DOWNLOAD_DIR = Path.home() / "Music" / "MusicSearch"
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-GAMDL = shutil.which("gamdl") or "/Library/Frameworks/Python.framework/Versions/3.11/bin/gamdl"
+# Run gamdl through this same Python so it works inside the venv on any OS.
+GAMDL_CMD = [sys.executable, "-m", "gamdl"]
 
 _GAMDL_CONFIG_TEMPLATE = PROJECT_ROOT / "gamdl" / "config.ini"
 _COOKIES_PATH = PROJECT_ROOT / "gamdl" / "cookies.txt"
 _GAMDL_CONFIG_RESOLVED = PROJECT_ROOT / "gamdl" / ".config_resolved.ini"
+_TEMP_DIR = PROJECT_ROOT / ".tmp"
+
+
+def _set_ini_value(text: str, key: str, value) -> str:
+    # A function (not a string) as the replacement: a Windows path such as
+    # C:\Users\me contains backslashes that re.sub would treat as escapes.
+    return re.sub(
+        rf"^{key}\s*=.*$",
+        lambda _m: f"{key} = {value}",
+        text,
+        flags=re.MULTILINE,
+    )
 
 
 def _resolve_gamdl_config() -> str:
-    """Write config.ini with the absolute cookies_path substituted in."""
-    template = _GAMDL_CONFIG_TEMPLATE.read_text()
-    resolved = re.sub(
-        r"^cookies_path\s*=.*$",
-        f"cookies_path = {_COOKIES_PATH}",
-        template,
-        flags=re.MULTILINE,
-    )
-    _GAMDL_CONFIG_RESOLVED.write_text(resolved)
+    """Write config.ini with absolute cookies / ffmpeg / temp paths substituted in."""
+    _TEMP_DIR.mkdir(exist_ok=True)
+    text = _GAMDL_CONFIG_TEMPLATE.read_text(encoding="utf-8")
+    text = _set_ini_value(text, "cookies_path", _COOKIES_PATH)
+    text = _set_ini_value(text, "temp_path", _TEMP_DIR)
+    text = _set_ini_value(text, "ffmpeg_path", shutil.which("ffmpeg") or "ffmpeg")
+    _GAMDL_CONFIG_RESOLVED.write_text(text, encoding="utf-8")
     return str(_GAMDL_CONFIG_RESOLVED)
 
 
@@ -55,7 +77,8 @@ GAMDL_CONFIG = _resolve_gamdl_config()
 
 def apple_music_is_configured() -> bool:
     """Whether gamdl is installed and has a usable Apple Music cookie/config setup."""
-    gamdl_ok = bool(GAMDL) and (shutil.which(GAMDL) is not None or os.access(GAMDL, os.X_OK))
+    import importlib.util
+    gamdl_ok = importlib.util.find_spec("gamdl") is not None
     cookies_ok = _COOKIES_PATH.exists() and _COOKIES_PATH.stat().st_size > 0
     config_ok = _GAMDL_CONFIG_TEMPLATE.exists() and _GAMDL_CONFIG_TEMPLATE.stat().st_size > 0
     return gamdl_ok and cookies_ok and config_ok
@@ -67,7 +90,7 @@ downloads = {}
 def _tail_log(path, lines=20):
     """Last `lines` lines of a log file. Server-side debugging only — never sent to the UI."""
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
             return "".join(f.readlines()[-lines:])
     except Exception:
         return ""
@@ -131,9 +154,9 @@ def _parse_download_error(log_text):
     if "does not exist" in log_text and ("create the file" in low or "drag and drop" in low):
         return "A required gamdl file is missing. Check that gamdl/config.ini and gamdl/cookies.txt exist."
     if "no module named" in low:
-        return "A required Python module is missing. Check that harmoni is installed at ~/harmoni (or set the HARMONI_PATH env var)."
+        return "A required Python module is missing. Run the setup script again to reinstall it."
     if "filenotfounderror" in low and "config.json" in low:
-        return "harmoni config not found. Check that ~/harmoni/config.json exists (or set the HARMONI_PATH env var)."
+        return "Spotify helper is not installed. Run the setup script again."
     if "429" in log_text or "rate limit" in low or "too many requests" in low:
         return "429 Too Many Requests: Spotify rate limit reached. Wait a moment and try again."
     if "503" in log_text and "spotify" in low:
@@ -186,7 +209,7 @@ def search_apple_music(query, limit=20):
     try:
         result = subprocess.run(
             [sys.executable, apple_script, query],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
         )
         if result.returncode == 0 and result.stdout.strip():
             return json.loads(result.stdout)[:limit]
@@ -253,7 +276,7 @@ def api_search():
 
     if platform in ("spotify", "both"):
         if not SPOTIFY_CLIENT_ID:
-            errors.append("Spotify not configured — set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET env vars")
+            errors.append("Spotify not configured — add SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET to the .env file and restart")
         else:
             try:
                 results.extend(search_spotify(query))
@@ -279,9 +302,45 @@ def api_status():
     return jsonify({
         "apple_music": apple_music_is_configured(),
         "spotify": bool(SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET),
+        "spotify_login": appenv.spotify_logged_in(),
         "default_save_dir": str(DOWNLOAD_DIR),
         "home_dir": str(Path.home()),
     })
+
+
+_spotify_login = {"status": "idle", "error": ""}
+
+
+def _spotify_login_worker():
+    script = PROJECT_ROOT / "scripts" / "harmoni" / "login.py"
+    try:
+        result = subprocess.run(
+            [sys.executable, str(script)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=330,
+        )
+        if result.returncode == 0:
+            _spotify_login.update(status="done", error="")
+            return
+        lines = [l.strip() for l in (result.stdout + result.stderr).splitlines() if l.strip().startswith("Error:")]
+        if not lines:
+            _server_log(f"Spotify login failed:\n{result.stdout}\n{result.stderr}")
+        _spotify_login.update(status="error", error=(lines[-1][6:].strip() if lines else "Spotify sign-in failed."))
+    except Exception as e:
+        _server_log(f"Spotify login failed: {e}")
+        _spotify_login.update(status="error", error="Spotify sign-in failed.")
+
+
+@app.route("/api/spotify/login", methods=["GET", "POST"])
+def api_spotify_login():
+    """POST starts the one-time Spotify sign-in (opens a browser tab on this
+    machine); GET reports its state: idle | waiting | done | error."""
+    if request.method == "POST":
+        if not SPOTIFY_CLIENT_ID:
+            return jsonify({"error": "Add SPOTIFY_CLIENT_ID to the .env file and restart the app first."}), 400
+        if _spotify_login["status"] != "waiting":
+            _spotify_login.update(status="waiting", error="")
+            threading.Thread(target=_spotify_login_worker, daemon=True).start()
+    return jsonify({**_spotify_login, "logged_in": appenv.spotify_logged_in()})
 
 
 def resolve_save_dir(raw):
@@ -378,7 +437,7 @@ def get_apple_music_playlist_info(playlist_id):
     script = PROJECT_ROOT / "scripts" / "apple" / "playlist_info.py"
     result = subprocess.run(
         [sys.executable, script, playlist_id],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
     )
     if result.stdout.strip():
         data = json.loads(result.stdout)
@@ -394,7 +453,7 @@ def get_youtube_playlist_info(playlist_id):
     script = PROJECT_ROOT / "scripts" / "youtube" / "playlist_info.py"
     result = subprocess.run(
         [sys.executable, script, playlist_id],
-        capture_output=True, text=True, timeout=120,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
     )
     if result.stdout.strip():
         data = json.loads(result.stdout)
@@ -432,7 +491,7 @@ def fetch_full_playlist_info(platform, playlist_id):
         script = PROJECT_ROOT / "scripts" / "harmoni" / "playlist_full.py"
     result = subprocess.run(
         [sys.executable, script, playlist_id],
-        capture_output=True, text=True, timeout=120,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
     )
     if result.stdout.strip():
         data = json.loads(result.stdout)
@@ -448,7 +507,7 @@ def fetch_full_playlist_info(platform, playlist_id):
 
 
 def safe_playlist_name(name):
-    return re.sub(r'[/\\:*?"<>|]', "", name).strip() or "Playlist"
+    return pathsafe.safe_name(name, fallback="Playlist")
 
 
 def normalize_name(s):
@@ -574,7 +633,7 @@ def fetch_song_info(platform, song_id):
         script = PROJECT_ROOT / "scripts" / "harmoni" / "song_full.py"
     result = subprocess.run(
         [sys.executable, script, song_id],
-        capture_output=True, text=True, timeout=90,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90,
     )
     if result.stdout.strip():
         data = json.loads(result.stdout)
@@ -618,9 +677,9 @@ def download_spotify_tracks(download_id, tracks, folder, log_path):
         try:
             proc = subprocess.run(
                 [sys.executable, str(match_script)],
-                input=json.dumps(tracks), capture_output=True, text=True, timeout=600,
+                input=json.dumps(tracks), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600,
             )
-            with open(log_path, "a") as log_file:
+            with open(log_path, "a", encoding="utf-8", errors="replace") as log_file:
                 log_file.write("--- Matching tracks against Apple Music ---\n")
                 if proc.stderr:
                     log_file.write(proc.stderr)
@@ -628,16 +687,16 @@ def download_spotify_tracks(download_id, tracks, folder, log_path):
             matched = result.get("matched", [])
             unmatched = result.get("unmatched", [])
         except Exception as e:
-            with open(log_path, "a") as log_file:
+            with open(log_path, "a", encoding="utf-8", errors="replace") as log_file:
                 log_file.write(f"Apple Music matching failed, falling back to YouTube for all tracks: {e}\n")
             matched, unmatched = [], list(tracks)
 
     returncode = 0
 
     if matched:
-        cmd = [GAMDL, *[t["apple_url"] for t in matched], "-o", str(folder), "--config-path", GAMDL_CONFIG]
+        cmd = [*GAMDL_CMD, *[t["apple_url"] for t in matched], "-o", str(folder), "--config-path", GAMDL_CONFIG]
         downloads[download_id]["cmd"] = " ".join(cmd)
-        with open(log_path, "a") as log_file:
+        with open(log_path, "a", encoding="utf-8", errors="replace") as log_file:
             log_file.write(f"\n--- Downloading {len(matched)} track(s) from Apple Music ---\n")
             log_file.flush()
             proc = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT)
@@ -658,10 +717,10 @@ def download_spotify_tracks(download_id, tracks, folder, log_path):
             {"artist": t["artist"], "track": t["title"], "duration_ms": t.get("duration_ms", 0)}
             for t in unmatched
         ])
-        with open(log_path, "a") as log_file:
+        with open(log_path, "a", encoding="utf-8", errors="replace") as log_file:
             log_file.write(f"\n--- Downloading {len(unmatched)} track(s) from YouTube ---\n")
             log_file.flush()
-            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=log_file, stderr=subprocess.STDOUT, text=True)
+            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=log_file, stderr=subprocess.STDOUT, text=True, encoding="utf-8")
             downloads[download_id]["pid"] = proc.pid
             proc.stdin.write(stdin_payload)
             proc.stdin.close()
@@ -687,10 +746,10 @@ def download_youtube_tracks(download_id, tracks, folder, log_path):
          "video_url": t["url"], "album": t.get("album", "")}
         for t in tracks
     ])
-    with open(log_path, "a") as log_file:
+    with open(log_path, "a", encoding="utf-8", errors="replace") as log_file:
         log_file.write(f"--- Downloading {len(tracks)} track(s) from YouTube Music ---\n")
         log_file.flush()
-        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=log_file, stderr=subprocess.STDOUT, text=True)
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=log_file, stderr=subprocess.STDOUT, text=True, encoding="utf-8")
         downloads[download_id]["pid"] = proc.pid
         proc.stdin.write(payload)
         proc.stdin.close()
@@ -718,9 +777,9 @@ def playlist_download_worker(download_id, platform, url, playlist_id, playlist_n
         downloads[download_id]["status"] = "downloading"
 
         if platform == "apple":
-            cmd = [GAMDL, url, "-o", str(playlist_dir), "--config-path", GAMDL_CONFIG]
+            cmd = [*GAMDL_CMD, url, "-o", str(playlist_dir), "--config-path", GAMDL_CONFIG]
             downloads[download_id]["cmd"] = " ".join(cmd)
-            with open(log_path, "w") as log_file:
+            with open(log_path, "w", encoding="utf-8", errors="replace") as log_file:
                 proc = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT)
                 downloads[download_id]["pid"] = proc.pid
                 returncode = proc.wait(timeout=7200)
@@ -810,9 +869,9 @@ def song_download_worker(download_id, platform, song_id, dest_dir=DOWNLOAD_DIR):
         downloads[download_id]["artist"] = track["artist"]
 
         if platform == "apple":
-            cmd = [GAMDL, track["url"], "-o", str(dest_dir), "--config-path", GAMDL_CONFIG]
+            cmd = [*GAMDL_CMD, track["url"], "-o", str(dest_dir), "--config-path", GAMDL_CONFIG]
             downloads[download_id]["cmd"] = " ".join(cmd)
-            with open(log_path, "w") as log_file:
+            with open(log_path, "w", encoding="utf-8", errors="replace") as log_file:
                 proc = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT)
                 downloads[download_id]["pid"] = proc.pid
                 returncode = proc.wait(timeout=600)
@@ -945,12 +1004,12 @@ def update_playlist_worker(download_id, platform, playlist_id):
 
         if platform == "apple":
             cmd = [
-                GAMDL, *[t["url"] for t in to_download],
+                *GAMDL_CMD, *[t["url"] for t in to_download],
                 "-o", str(folder),
                 "--config-path", GAMDL_CONFIG,
             ]
             downloads[download_id]["cmd"] = " ".join(cmd)
-            with open(log_path, "w") as log_file:
+            with open(log_path, "w", encoding="utf-8", errors="replace") as log_file:
                 proc = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT)
                 downloads[download_id]["pid"] = proc.pid
                 returncode = proc.wait(timeout=7200)
@@ -1011,7 +1070,7 @@ def download_worker(download_id, platform, title, artist, url, duration_ms=0, de
         downloads[download_id]["log"] = str(log_path)
 
         if platform == "apple":
-            cmd = [GAMDL, url, "-o", str(dest_dir), "--config-path", GAMDL_CONFIG]
+            cmd = [*GAMDL_CMD, url, "-o", str(dest_dir), "--config-path", GAMDL_CONFIG]
         else:
             harmoni_script = PROJECT_ROOT / "scripts" / "harmoni" / "download.py"
             cmd = [sys.executable, str(harmoni_script), artist, title, str(dest_dir), str(duration_ms)]
@@ -1019,7 +1078,7 @@ def download_worker(download_id, platform, title, artist, url, duration_ms=0, de
                 cmd.append(url)
         downloads[download_id]["cmd"] = " ".join(cmd)
 
-        with open(log_path, "w") as log_file:
+        with open(log_path, "w", encoding="utf-8", errors="replace") as log_file:
             proc = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT)
             downloads[download_id]["pid"] = proc.pid
             returncode = proc.wait(timeout=300)
@@ -1092,6 +1151,20 @@ def api_download_status(download_id):
     return jsonify(out)
 
 
+def main():
+    port = int(os.environ.get("PORT", "5050"))
+    url = f"http://127.0.0.1:{port}/"
+    print(f"\nMusicSearch is running at {url}\nPress Ctrl+C in this window to stop it.\n", flush=True)
+    if os.environ.get("MUSICSEARCH_NO_BROWSER") != "1":
+        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+    try:
+        # Debug mode serves interactive tracebacks to the browser; opt in explicitly.
+        app.run(host="127.0.0.1", port=port, debug=os.environ.get("FLASK_DEBUG") == "1")
+    except OSError as e:
+        print(f"\nCould not start on port {port}: {e.strerror or e}.\n"
+              "Another copy of MusicSearch may already be running - close it, or set a different PORT.", file=sys.stderr)
+        sys.exit(1)
+
+
 if __name__ == "__main__":
-    # Debug mode serves interactive tracebacks to the browser; opt in explicitly.
-    app.run(debug=os.environ.get("FLASK_DEBUG") == "1", port=5050)
+    main()

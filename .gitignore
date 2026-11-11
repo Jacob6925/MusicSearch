@@ -1,9 +1,28 @@
-/playlists.json
+# Secrets and per-user config
+/.env
+/.env.*
+!/.env.example
 /gamdl/cookies.txt
 /gamdl/.config_resolved.ini
-/.env
-/app.log
+
+# Per-user data
+/playlists.json
+/playlists.json.tmp
+
+# Installed by setup (see setup.py)
+/.venv/
+/vendor/
+/.tmp/
+
+# Logs and caches
+*.log
 __pycache__/
 *.pyc
+
+# OS / editor junk
 .DS_Store
-.idea/*
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+.claude/

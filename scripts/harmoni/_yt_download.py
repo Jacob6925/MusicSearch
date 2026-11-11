@@ -5,13 +5,17 @@ embedder so downloaded files retain the same tags harmoni would have written."""
 import asyncio
 import os
 import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 
 from tqdm import tqdm
 from utils import log_info, log_success, log_error, log_warning
 from downloader.metadata import embed_track_metadata, find_downloaded_audio_path
 
+from pathsafe import safe_name
 from yt_search import find_best_match
+
+YT_DLP = [sys.executable, "-m", "yt_dlp"]
 
 
 # YouTube is only the fallback source (Apple Music via gamdl is primary, and its
@@ -25,7 +29,7 @@ YT_TRANSCODE_BITRATE = "256K"
 
 
 def _base_filename(artist: str, track: str) -> str:
-    return f"{artist} - {track}".replace("/", "-")
+    return safe_name(f"{artist} - {track}", fallback="Track", slash_to="-")
 
 
 def _log_audio_info(path: str) -> None:
@@ -34,7 +38,8 @@ def _log_audio_info(path: str) -> None:
         out = subprocess.run(
             ["ffprobe", "-v", "error", "-select_streams", "a:0",
              "-show_entries", "stream=codec_name,bit_rate", "-of", "csv=p=0", path],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=30,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+            encoding="utf-8", errors="replace", timeout=30,
         ).stdout.strip()
         codec, _, bit_rate = out.partition(",")
         kbps = f"{int(bit_rate) // 1000} kbps" if bit_rate.isdigit() else "unknown bitrate"
@@ -65,21 +70,23 @@ def download_one(track_dict: dict, output_dir: str, config: dict | None = None) 
         log_warning(f"No YouTube match found via search for '{query}', falling back to top result")
         target = f"ytsearch1:{query}"
 
-    output_template = os.path.join(output_dir, f"{filename}.%(ext)s")
+    # "%" is special in yt-dlp output templates, so a literal one must be doubled.
+    output_template = os.path.join(output_dir, f"{filename.replace('%', '%%')}.%(ext)s")
     # Tiered so the track always arrives: native AAC -> any stream converted to M4A
     # (Rekordbox-compatible) -> yt-dlp's plain defaults (may not be M4A).
     audio_args = ["-x", "--audio-format", YT_AUDIO_FORMAT, "--audio-quality", YT_TRANSCODE_BITRATE,
                   "-o", output_template]
     attempts = [
-        ("preferred", ["yt-dlp", target, "-f", YT_FORMAT_SELECTOR, *audio_args]),
-        ("converted", ["yt-dlp", target, "-f", "bestaudio/best", *audio_args]),
-        ("default", ["yt-dlp", target, "-x", "-o", output_template]),
+        ("preferred", [*YT_DLP, target, "-f", YT_FORMAT_SELECTOR, *audio_args]),
+        ("converted", [*YT_DLP, target, "-f", "bestaudio/best", *audio_args]),
+        ("default", [*YT_DLP, target, "-x", "-o", output_template]),
     ]
 
     process = None
     for i, (label, cmd) in enumerate(attempts):
         try:
-            process = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            process = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                     text=True, encoding="utf-8", errors="replace")
         except Exception as e:
             log_error(f"Error downloading {query}: {e}")
             return False

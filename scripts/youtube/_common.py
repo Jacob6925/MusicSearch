@@ -1,15 +1,18 @@
 import json
 import subprocess
+import sys
+
+YT_DLP = [sys.executable, "-m", "yt_dlp"]
 
 
 def fetch_playlist(playlist_id: str, first_only: bool = False) -> dict:
     """Return yt-dlp's flat JSON for a YouTube Music playlist (works for public/unlisted
     playlists without authentication)."""
-    cmd = ["yt-dlp", "--flat-playlist", "-J", "--no-warnings",
+    cmd = [*YT_DLP, "--flat-playlist", "-J", "--no-warnings",
            f"https://music.youtube.com/playlist?list={playlist_id}"]
     if first_only:
         cmd += ["--playlist-items", "1"]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
     if result.returncode != 0 or not result.stdout.strip():
         err = (result.stderr or "").strip().splitlines()
         detail = err[-1] if err else "yt-dlp failed"
@@ -43,9 +46,9 @@ def entry_to_track(e: dict) -> dict:
 
 def fetch_video(video_id: str) -> dict:
     """Return yt-dlp's JSON for a single video (ignoring any playlist it belongs to)."""
-    cmd = ["yt-dlp", "-J", "--no-playlist", "--no-warnings",
+    cmd = [*YT_DLP, "-J", "--no-playlist", "--no-warnings",
            f"https://music.youtube.com/watch?v={video_id}"]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
     if result.returncode != 0 or not result.stdout.strip():
         err = (result.stderr or "").strip().splitlines()
         detail = err[-1] if err else "yt-dlp failed"

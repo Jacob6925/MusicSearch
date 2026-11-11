@@ -1,5 +1,24 @@
-flask>=3.1
-requests>=2.32
-python-dotenv>=1.0
-structlog>=24.0
-gamdl>=3.7
+# Web app
+flask>=3.1,<4
+requests>=2.32,<3
+python-dotenv>=1.0,<2
+structlog>=24.0,<27
+
+# Apple Music. Pinned exactly: the helper scripts use gamdl's internal API.
+gamdl==3.7.4
+
+# YouTube downloads. Intentionally not capped: YouTube changes often, so a fresh
+# yt-dlp is the first thing to try when downloads fail.
+yt-dlp>=2025.1.1
+
+# ffmpeg + ffprobe, downloaded on first use if they aren't already installed
+static-ffmpeg>=2.13,<4
+
+# Needed by the bundled Harmoni helper (Spotify + metadata tagging), minus its GUI
+mutagen>=1.47,<2
+tqdm>=4.66,<5
+httpx>=0.27,<1
+psutil>=5.9
+colorama>=0.4.6,<1
+schedule>=1.2,<2
+questionary>=2.0,<3

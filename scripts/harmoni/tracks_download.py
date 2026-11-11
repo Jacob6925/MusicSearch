@@ -11,6 +11,7 @@ import os
 import sys
 
 from _common import config
+from pathsafe import safe_name
 from _yt_download import download_many
 
 if len(sys.argv) < 3:
@@ -26,7 +27,7 @@ if not tracks:
     sys.exit(0)
 
 # An empty playlist_name means "download straight into output_dir" (single-song links).
-folder_name = playlist_name.replace("/", "-").strip()
+folder_name = safe_name(playlist_name, fallback="", slash_to="-") if playlist_name.strip() else ""
 playlist_dir = os.path.join(output_dir, folder_name) if folder_name else output_dir
 os.makedirs(playlist_dir, exist_ok=True)
 

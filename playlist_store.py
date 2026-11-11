@@ -33,7 +33,7 @@ def _load():
     if not STORE_PATH.exists():
         return {}
     try:
-        with open(STORE_PATH) as f:
+        with open(STORE_PATH, encoding="utf-8") as f:
             data = json.load(f)
         for entry in data.values():
             if "folder" in entry:
@@ -51,7 +51,7 @@ def _save(data):
             e["folder"] = _to_relative_folder(e["folder"])
         portable[key] = e
     tmp_path = STORE_PATH.with_suffix(".json.tmp")
-    with open(tmp_path, "w") as f:
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(portable, f, indent=2)
     tmp_path.replace(STORE_PATH)
 

@@ -1,0 +1,40 @@
+name: Install and start
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        # macos-latest = Apple Silicon, macos-15-intel = Intel, windows-latest = native Windows
+        os: [windows-latest, macos-latest, macos-15-intel]
+        python: ["3.10", "3.12"]
+    env:
+      MUSICSEARCH_CI: "1"   # stops the launchers from waiting for a key press
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Setup (Windows)
+        if: runner.os == 'Windows'
+        run: .\setup.bat
+
+      - name: Setup (macOS)
+        if: runner.os == 'macOS'
+        run: ./setup.command
+
+      - name: Unit tests
+        run: python -c "import subprocess,sys,os; py=os.path.join('.venv','Scripts' if os.name=='nt' else 'bin','python'); sys.exit(subprocess.call([py,'-m','unittest','discover','-s','tests','-v']))"
+
+      - name: Start the app with the launcher and check it answers
+        run: python tests/smoke_run.py

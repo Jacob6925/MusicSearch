@@ -4,6 +4,7 @@ version — e.g. a remix's original instead of the remix itself)."""
 import json
 import re
 import subprocess
+import sys
 
 NOISE_WORDS = {"feat", "ft", "the", "a", "an"}
 
@@ -47,9 +48,9 @@ def find_best_match(artist: str, track: str, duration_ms: int | None = None, sea
     """Search YouTube for `artist - track` and return the best-scoring candidate as
     {'url', 'title', 'score'}, or None if the search returns nothing or yt-dlp fails."""
     query = f"{artist} - {track}"
-    cmd = ["yt-dlp", f"ytsearch{search_count}:{query}", "--flat-playlist", "-J", "--no-warnings"]
+    cmd = [sys.executable, "-m", "yt_dlp", f"ytsearch{search_count}:{query}", "--flat-playlist", "-J", "--no-warnings"]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
         data = json.loads(result.stdout)
     except Exception:
         return None

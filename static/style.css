@@ -949,3 +949,19 @@ header h1 {
         width: auto;
     }
 }
+
+.status-banner button {
+    margin-top: 0.5rem;
+    background: #1db954;
+    color: #000;
+    border: 0;
+    border-radius: 6px;
+    padding: 0.4rem 0.8rem;
+    font-size: 0.85rem;
+    cursor: pointer;
+}
+
+.status-banner button:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
