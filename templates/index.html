@@ -55,12 +55,17 @@
         <div class="playlist-section">
             <button id="paste-playlist-btn" class="paste-playlist-btn">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
-                Paste Playlist Link
+                Paste Playlist or Song Link
             </button>
             <div id="playlist-url-area" class="playlist-url-area hidden">
                 <div class="playlist-input-row">
-                    <input type="text" id="playlist-url-input" placeholder="Paste Apple Music or Spotify playlist URL…" autocomplete="off" spellcheck="false">
+                    <input type="text" id="playlist-url-input" placeholder="Paste an Apple Music, Spotify, or YouTube playlist or song URL…" autocomplete="off" spellcheck="false">
                     <button id="playlist-dl-btn" class="playlist-dl-btn" disabled>Download</button>
+                </div>
+                <div id="link-kind-choice" class="link-kind-choice hidden">
+                    <span>This link has both a song and a playlist. Download:</span>
+                    <button type="button" class="kind-btn" data-kind="song">Just this song</button>
+                    <button type="button" class="kind-btn" data-kind="playlist">The whole playlist</button>
                 </div>
                 <div id="playlist-validation" class="playlist-validation"></div>
             </div>
@@ -140,6 +145,8 @@
             const query = searchInput.value.trim();
             if (!query) return;
 
+            clearPlaylistStatus();
+            clearPmStatus();
             loadingDiv.classList.remove('hidden');
             errorDiv.classList.add('hidden');
             resultsInfo.classList.add('hidden');
@@ -211,7 +218,7 @@
                     <td class="col-album" title="${r.album}">${r.album}</td>
                     <td class="col-dur">${formatDuration(r.duration_ms)}</td>
                     <td class="col-year">${r.release_date ? r.release_date.substring(0, 4) : ''}</td>
-                    <td class="col-src"><span class="platform-badge ${r.platform}">${r.platform === 'apple' ? 'Apple' : 'Spotify'}</span></td>
+                    <td class="col-src"><span class="platform-badge ${r.platform}">${platformShort(r.platform)}</span></td>
                     <td class="col-dl"><button class="dl-btn" onclick="startDownload(this, ${i})" data-index="${i}" title="Download">
                         <svg class="dl-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                     </button></td>
@@ -222,6 +229,13 @@
         // Renders a playlist's remote tracks alongside local-disk state: which are
         // downloaded already, which are on the playlist but missing, and which
         // local files aren't on the playlist at all (grouped after, order preserved).
+        function platformLabel(p) {
+            return {apple: 'Apple Music', youtube: 'YouTube Music'}[p] || 'Spotify';
+        }
+        function platformShort(p) {
+            return {apple: 'Apple', youtube: 'YouTube'}[p] || 'Spotify';
+        }
+
         function renderPlaylistView(data) {
             const tracks = data.tracks;
             lastResults = tracks;
@@ -246,7 +260,7 @@
                     <td class="col-album" title="${r.album}">${r.album}</td>
                     <td class="col-dur">${formatDuration(r.duration_ms)}</td>
                     <td class="col-year">${r.release_date ? r.release_date.substring(0, 4) : ''}</td>
-                    <td class="col-src"><span class="platform-badge ${r.platform}">${r.platform === 'apple' ? 'Apple' : 'Spotify'}</span></td>
+                    <td class="col-src"><span class="platform-badge ${r.platform}">${platformShort(r.platform)}</span></td>
                     <td class="col-status">${r.local
                         ? '<span class="status-badge status-badge-both">On device</span>'
                         : '<span class="status-badge status-badge-missing">Missing</span>'}</td>
@@ -376,9 +390,6 @@
                 try {
                     const resp = await fetch(`/api/download/${downloadId}`);
                     const data = await resp.json();
-                    if (data.log_tail) {
-                        btn.title = data.log_tail.trim().split('\n').pop() || 'Downloading…';
-                    }
                     if (data.status === 'done') {
                         clearInterval(interval);
                         btn.classList.remove('downloading');
@@ -391,7 +402,6 @@
                         btn.classList.add('dl-error');
                         btn.innerHTML = '!';
                         btn.title = data.error || 'Download failed';
-                        console.error('[Download error]', data);
                     }
                 } catch (e) {
                     clearInterval(interval);
@@ -413,65 +423,115 @@
         const playlistStatusArea = document.getElementById('playlist-status-area');
         const playlistStatusText = document.getElementById('playlist-status-text');
 
-        let playlistInfo = null;
+        const linkKindChoice = document.getElementById('link-kind-choice');
+
+        let linkInfo = null;
         let validationTimer = null;
+        let validationSeq = 0;
 
         pastePlBtn.addEventListener('click', async () => {
+            clearPlaylistStatus();
             pastePlBtn.classList.add('hidden');
             playlistUrlArea.classList.remove('hidden');
             playlistUrlInput.focus();
             try {
                 const text = await navigator.clipboard.readText();
-                if (text && (text.includes('music.apple.com') || text.includes('open.spotify.com/playlist'))) {
+                if (text && (text.includes('music.apple.com') || text.includes('open.spotify.com/') || text.includes('youtube.com/') || text.includes('youtu.be/'))) {
                     playlistUrlInput.value = text;
-                    validatePlaylistUrl(text);
+                    handleLinkChange(text.trim(), 0);
                 }
             } catch (_) {}
         });
 
         playlistUrlInput.addEventListener('input', () => {
-            clearTimeout(validationTimer);
-            const url = playlistUrlInput.value.trim();
-            if (!url) {
-                setValidation('', '');
-                playlistDlBtn.disabled = true;
-                playlistInfo = null;
-                return;
-            }
-            if (!isPlaylistUrl(url)) {
-                setValidation('error', 'Not a valid Apple Music or Spotify playlist URL');
-                playlistDlBtn.disabled = true;
-                playlistInfo = null;
-                return;
-            }
-            setValidation('loading', 'Fetching playlist info…');
-            validationTimer = setTimeout(() => validatePlaylistUrl(url), 400);
+            handleLinkChange(playlistUrlInput.value.trim(), 400);
         });
 
-        function isPlaylistUrl(url) {
-            return /music\.apple\.com\/([a-z]{2}(-[a-z]{2})?\/)?playlist\//i.test(url)
-                || /open\.spotify\.com\/(intl-[a-z]{2}\/)?playlist\//i.test(url);
+        // A link is a 'playlist', a 'song', or 'both' (a YouTube watch link that carries
+        // v= and list=) — in which case the user picks. Mirrors parse_playlist_url /
+        // parse_song_url in app.py.
+        function classifyLink(url) {
+            const playlist = /music\.apple\.com\/([a-z]{2}(-[a-z]{2})?\/)?playlist\//i.test(url)
+                || /open\.spotify\.com\/(intl-[a-z]{2}\/)?playlist\//i.test(url)
+                || /(music|www|m)\.youtube\.com\/(playlist|watch)\?[^\s#]*\blist=/i.test(url);
+            const song = /music\.apple\.com\/([a-z]{2}(-[a-z]{2})?\/)?song\//i.test(url)
+                || /music\.apple\.com\/([a-z]{2}(-[a-z]{2})?\/)?album\/[^?#\s]*\?([^#\s]*&)?i=\d+/i.test(url)
+                || /open\.spotify\.com\/(intl-[a-z]{2}\/)?track\//i.test(url)
+                || /(music|www|m)\.youtube\.com\/watch\?[^\s#]*?\bv=[\w-]{11}/i.test(url)
+                || /youtu\.be\/[\w-]{11}/i.test(url);
+            if (playlist && song) return 'both';
+            return playlist ? 'playlist' : song ? 'song' : null;
         }
 
-        async function validatePlaylistUrl(url) {
-            setValidation('loading', 'Fetching playlist info…');
+        function handleLinkChange(url, delay) {
+            clearTimeout(validationTimer);
+            validationSeq++;
+            clearPlaylistStatus();
+            linkInfo = null;
             playlistDlBtn.disabled = true;
-            playlistInfo = null;
+            setKindChoice(false);
+            if (!url) {
+                setValidation('', '');
+                return;
+            }
+            const kind = classifyLink(url);
+            if (!kind) {
+                setValidation('error', 'Not a valid Apple Music, Spotify, or YouTube playlist or song URL');
+                return;
+            }
+            if (kind === 'both') {
+                setKindChoice(true);
+                setValidation('', '');
+                return;
+            }
+            setValidation('loading', kind === 'song' ? 'Fetching song info…' : 'Fetching playlist info…');
+            validationTimer = setTimeout(() => validateLink(url, kind), delay);
+        }
+
+        function setKindChoice(show, selected) {
+            linkKindChoice.classList.toggle('hidden', !show);
+            linkKindChoice.querySelectorAll('.kind-btn').forEach(b => {
+                b.classList.toggle('active', b.dataset.kind === selected);
+            });
+        }
+
+        linkKindChoice.addEventListener('click', (e) => {
+            const btn = e.target.closest('.kind-btn');
+            if (!btn) return;
+            const url = playlistUrlInput.value.trim();
+            validationSeq++;
+            clearPlaylistStatus();
+            linkInfo = null;
+            playlistDlBtn.disabled = true;
+            setKindChoice(true, btn.dataset.kind);
+            validateLink(url, btn.dataset.kind);
+        });
+
+        async function validateLink(url, kind) {
+            const seq = ++validationSeq;
+            const isSong = kind === 'song';
+            setValidation('loading', isSong ? 'Fetching song info…' : 'Fetching playlist info…');
+            playlistDlBtn.disabled = true;
+            linkInfo = null;
             try {
-                const resp = await fetch(`/api/playlist/info?url=${encodeURIComponent(url)}`);
+                const resp = await fetch(`/api/${isSong ? 'song' : 'playlist'}/info?url=${encodeURIComponent(url)}`);
                 const data = await resp.json();
+                if (seq !== validationSeq) return;  // input changed while fetching
                 if (data.error) {
-                    setValidation('error', data.error);
+                    setValidation('error', escHtml(data.error));
                     return;
                 }
-                playlistInfo = { ...data, url };
-                const platform = data.platform === 'apple' ? 'Apple Music' : 'Spotify';
-                const tracks = data.track_count ? ` · ${data.track_count} tracks` : '';
+                linkInfo = { ...data, url, kind };
+                const platform = platformLabel(data.platform);
+                const detail = isSong
+                    ? (data.artist ? ` — ${escHtml(data.artist)}` : '')
+                    : (data.track_count ? ` · ${data.track_count} tracks` : '');
                 setValidation('ok',
-                    `<span class="pl-badge ${data.platform}">${platform}</span> <strong>${escHtml(data.title)}</strong>${tracks}`
+                    `<span class="pl-badge ${data.platform}">${platform}</span> <strong>${escHtml(data.title)}</strong>${detail}`
                 );
                 playlistDlBtn.disabled = false;
             } catch (_) {
+                if (seq !== validationSeq) return;
                 setValidation('error', 'Could not reach server');
             }
         }
@@ -491,25 +551,29 @@
         }
 
         playlistDlBtn.addEventListener('click', async () => {
-            if (!playlistInfo) return;
+            if (!linkInfo) return;
             playlistDlBtn.disabled = true;
             playlistDlBtn.textContent = 'Starting…';
 
             try {
-                const resp = await fetch('/api/playlist/download', {
+                const isSong = linkInfo.kind === 'song';
+                const resp = await fetch(isSong ? '/api/song/download' : '/api/playlist/download', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ url: playlistInfo.url, playlist_name: playlistInfo.title }),
+                    body: JSON.stringify(isSong
+                        ? { url: linkInfo.url, save_dir: songSaveDir }
+                        : { url: linkInfo.url, playlist_name: linkInfo.title, track_count: linkInfo.track_count || 0 }),
                 });
                 const data = await resp.json();
                 if (data.error) {
-                    showPlaylistStatus('error', `Error: ${data.error}`);
+                    showPlaylistStatus('error', `Error: ${escHtml(data.error)}`);
                     playlistDlBtn.disabled = false;
                     playlistDlBtn.textContent = 'Download';
                     return;
                 }
-                showPlaylistStatus('downloading', `Downloading <strong>${escHtml(playlistInfo.title)}</strong>…`);
-                pollPlaylistDownload(data.download_id);
+                showPlaylistStatus('downloading', `Downloading <strong>${escHtml(linkInfo.title)}</strong>…`);
+                pollPlaylistDownload(data.download_id, linkInfo.title, isSong,
+                    isSong ? displayPath(songSaveDir || defaultSaveDir) : '~/Music/MusicSearch/');
             } catch (_) {
                 showPlaylistStatus('error', 'Request failed');
                 playlistDlBtn.disabled = false;
@@ -523,25 +587,34 @@
             playlistStatusArea.classList.remove('hidden');
         }
 
-        function pollPlaylistDownload(downloadId) {
+        // Hide a finished (done/error) status once the user moves on to something else.
+        // An in-progress "downloading" status is left alone: it's live and its poll
+        // will replace it with the result.
+        function clearPlaylistStatus() {
+            if (playlistStatusArea.classList.contains('ps-downloading')) return;
+            playlistStatusArea.classList.add('hidden');
+        }
+
+        function pollPlaylistDownload(downloadId, title, isSong, destLabel) {
             const interval = setInterval(async () => {
                 try {
                     const resp = await fetch(`/api/download/${downloadId}`);
                     const data = await resp.json();
                     if (data.status === 'done') {
                         clearInterval(interval);
-                        showPlaylistStatus('done', `Downloaded <strong>${escHtml(playlistInfo.title)}</strong> to ~/Music/MusicSearch/`);
+                        showPlaylistStatus('done', `Downloaded <strong>${escHtml(title)}</strong> to ${escHtml(destLabel)}`);
                         playlistDlBtn.textContent = 'Download';
-                        playlistDlBtn.disabled = false;
-                        loadPlaylistManager();
+                        playlistDlBtn.disabled = !linkInfo;
+                        if (!isSong) loadPlaylistManager();
                     } else if (data.status === 'error') {
                         clearInterval(interval);
                         showPlaylistStatus('error', `Failed: ${escHtml(data.error || 'Unknown error')}`);
                         playlistDlBtn.textContent = 'Download';
-                        playlistDlBtn.disabled = false;
-                    } else if (data.log_tail) {
-                        const last = data.log_tail.trim().split('\n').pop() || '';
-                        showPlaylistStatus('downloading', `Downloading <strong>${escHtml(playlistInfo.title)}</strong>… <span class="ps-log">${escHtml(last)}</span>`);
+                        playlistDlBtn.disabled = !linkInfo;
+                    } else if (data.status === 'downloading') {
+                        const p = data.progress;
+                        const count = p ? ` <span class="ps-count">${p.done} of ${p.total} tracks</span>` : '';
+                        showPlaylistStatus('downloading', `Downloading <strong>${escHtml(title)}</strong>…${count}`);
                     }
                 } catch (_) {
                     clearInterval(interval);
@@ -597,7 +670,7 @@
                 return;
             }
             pmList.innerHTML = managedPlaylists.map(p => {
-                const platform = p.platform === 'apple' ? 'Apple Music' : 'Spotify';
+                const platform = platformLabel(p.platform);
                 return `
                     <div class="pm-item" data-platform="${p.platform}" data-id="${escHtml(p.id)}">
                         <div class="pm-item-info">
@@ -621,13 +694,17 @@
         pmToggleBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             const opening = pmDropdown.classList.contains('hidden');
-            pmDropdown.classList.toggle('hidden');
-            if (opening) loadPlaylistManager();
+            if (opening) {
+                pmDropdown.classList.remove('hidden');
+                loadPlaylistManager();
+            } else {
+                closePmDropdown();
+            }
         });
 
         document.addEventListener('click', (e) => {
             if (!pmMenuWrap.contains(e.target)) {
-                pmDropdown.classList.add('hidden');
+                closePmDropdown();
             }
         });
 
@@ -635,6 +712,17 @@
             pmStatus.className = `pm-status ps-${state}`;
             pmStatus.innerHTML = html;
             pmStatus.classList.remove('hidden');
+        }
+
+        // Same rule as clearPlaylistStatus(): drop finished results, keep live progress.
+        function clearPmStatus() {
+            if (pmStatus.classList.contains('ps-downloading')) return;
+            pmStatus.classList.add('hidden');
+        }
+
+        function closePmDropdown() {
+            if (!pmDropdown.classList.contains('hidden')) clearPmStatus();
+            pmDropdown.classList.add('hidden');
         }
 
         pmList.addEventListener('click', async (e) => {
@@ -678,6 +766,7 @@
                     }
                     pmStatus.classList.add('hidden');
                     pmDropdown.classList.add('hidden');
+                    clearPlaylistStatus();
                     errorDiv.classList.add('hidden');
                     emptyState.classList.add('hidden');
                     const localCount = data.tracks.filter(t => t.local).length;
@@ -727,7 +816,6 @@
         });
 
         function pollPlaylistUpdate(downloadId, pl) {
-            let updatingShown = false;
             const interval = setInterval(async () => {
                 try {
                     const resp = await fetch(`/api/download/${downloadId}`);
@@ -744,9 +832,10 @@
                         clearInterval(interval);
                         showPmStatus('error', `Failed: ${escHtml(data.error || 'Unknown error')}`);
                         await loadPlaylistManager();
-                    } else if (data.log_tail && !updatingShown) {
-                        updatingShown = true;
-                        showPmStatus('downloading', `Updating <strong>${escHtml(pl.title)}</strong>…`);
+                    } else if (data.status === 'downloading') {
+                        const p = data.progress;
+                        const count = p ? ` <span class="ps-count">${p.done} of ${p.total} tracks</span>` : '';
+                        showPmStatus('downloading', `Updating <strong>${escHtml(pl.title)}</strong>…${count}`);
                     }
                 } catch (_) {
                     clearInterval(interval);

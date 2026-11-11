@@ -2,7 +2,8 @@
 """Download an explicit list of {artist, track, duration_ms} entries into a playlist
 folder, matching each to the best YouTube video (instead of harmoni's blind
 top-search-result) and embedding metadata via harmoni's own metadata embedder.
-Used by the playlist manager's Update flow to fetch only the tracks missing locally.
+Used by playlist downloads, the playlist manager's Update flow (only the tracks
+missing locally) and single-song link downloads (empty playlist_name = output_dir itself).
 Track list is read as JSON from stdin."""
 import asyncio
 import json
@@ -24,10 +25,12 @@ if not tracks:
     print("No tracks to download", file=sys.stderr)
     sys.exit(0)
 
-playlist_dir = os.path.join(output_dir, playlist_name.replace("/", "-").strip())
+# An empty playlist_name means "download straight into output_dir" (single-song links).
+folder_name = playlist_name.replace("/", "-").strip()
+playlist_dir = os.path.join(output_dir, folder_name) if folder_name else output_dir
 os.makedirs(playlist_dir, exist_ok=True)
 
-print(f"Downloading {len(tracks)} missing track(s) into '{playlist_name}'...")
+print(f"Downloading {len(tracks)} track(s) into '{folder_name or output_dir}'...")
 
 try:
     asyncio.run(download_many(tracks, playlist_dir, config))

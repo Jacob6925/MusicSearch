@@ -355,6 +355,11 @@ header h1 {
     color: #1db954;
 }
 
+.platform-badge.youtube {
+    background: rgba(255, 0, 0, 0.15);
+    color: #ff4e45;
+}
+
 .col-dl {
     width: 36px;
     text-align: center;
@@ -636,6 +641,11 @@ header h1 {
     color: #1db954;
 }
 
+.pl-badge.youtube {
+    background: rgba(255, 0, 0, 0.15);
+    color: #ff4e45;
+}
+
 .playlist-status-area {
     font-size: 0.82rem;
     padding: 0.55rem 0.85rem;
@@ -662,7 +672,7 @@ header h1 {
     color: #fca5a5;
 }
 
-.ps-log {
+.ps-count {
     opacity: 0.6;
     font-size: 0.75rem;
     margin-left: 0.25rem;

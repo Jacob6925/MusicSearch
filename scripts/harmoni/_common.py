@@ -13,23 +13,43 @@ except FileNotFoundError:
     print(f"Error: harmoni config not found at {HARMONI_PATH / 'config.json'}.", file=sys.stderr)
     sys.exit(1)
 
-audio_format = config.get("audio_format", "mp3")
+
+def spotify_track_to_dict(track: dict) -> dict:
+    """Convert a Spotify API track object into the track dict the app uses."""
+    artists = [a["name"] for a in track.get("artists", []) if a.get("name")]
+    album = track.get("album", {}) or {}
+    images = album.get("images", []) or []
+    return {
+        "title": track["name"],
+        "artist": ", ".join(artists) if artists else "Unknown",
+        "album": album.get("name", ""),
+        "artwork": images[0]["url"] if images else "",
+        "preview_url": track.get("preview_url", "") or "",
+        "url": track.get("external_urls", {}).get("spotify", ""),
+        "duration_ms": track.get("duration_ms", 0),
+        "release_date": album.get("release_date", ""),
+        "explicit": bool(track.get("explicit", False)),
+        "isrc": track.get("external_ids", {}).get("isrc", ""),
+    }
 
 
-def spotify_error_message(exc: Exception) -> str:
-    """Map a Spotify API exception to a user-readable error line."""
+def spotify_error_message(exc: Exception, kind: str = "playlist") -> str:
+    """Map a Spotify API exception to a user-readable error line.
+    `kind` ("playlist" or "track") only tunes the 400/403/404 wording."""
     msg = str(exc)
     if "400" in msg:
-        return "Error: 400 Bad Request: The playlist URL may be malformed."
+        return f"Error: 400 Bad Request: The {kind} URL may be malformed."
     if "401" in msg:
         return "Error: 401 Unauthorized: Please re-authenticate harmoni."
     if "403" in msg:
+        if kind == "track":
+            return "Error: 403 Forbidden: Spotify denied access to this track."
         return (
             "Error: 403 Forbidden: The playlist must be public and owned by your Spotify account. "
             "Artist release playlists and playlists owned by others cannot be downloaded."
         )
     if "404" in msg:
-        return "Error: 404 Not Found: Check that the playlist URL is correct."
+        return f"Error: 404 Not Found: Check that the {kind} URL is correct."
     if "429" in msg:
         return "Error: 429 Too Many Requests: Spotify rate limit reached. Wait a moment and try again."
     if "500" in msg:

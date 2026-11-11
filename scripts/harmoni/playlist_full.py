@@ -4,7 +4,7 @@
 import json
 import sys
 
-from _common import config, spotify_error_message
+from _common import config, spotify_error_message, spotify_track_to_dict
 from spotify_api.client import SpotifyClient
 
 if len(sys.argv) < 2:
@@ -25,21 +25,7 @@ try:
         track = item.get("item") or item.get("track")
         if not track or not track.get("name"):
             continue
-        artists = [a["name"] for a in track.get("artists", []) if a.get("name")]
-        album = track.get("album", {}) or {}
-        images = album.get("images", []) or []
-        tracks.append({
-            "title": track["name"],
-            "artist": ", ".join(artists) if artists else "Unknown",
-            "album": album.get("name", ""),
-            "artwork": images[0]["url"] if images else "",
-            "preview_url": track.get("preview_url", "") or "",
-            "url": track.get("external_urls", {}).get("spotify", ""),
-            "duration_ms": track.get("duration_ms", 0),
-            "release_date": album.get("release_date", ""),
-            "explicit": bool(track.get("explicit", False)),
-            "isrc": track.get("external_ids", {}).get("isrc", ""),
-        })
+        tracks.append(spotify_track_to_dict(track))
 
     result = {
         "title": meta.get("name", "Unknown Playlist"),

@@ -71,6 +71,41 @@ def _tail_log(path, lines=20):
         return ""
 
 
+def _server_log(text):
+    """Write raw diagnostic output to the Flask terminal (not to the browser)."""
+    print(f"[MusicSearch] {text}", file=sys.stderr, flush=True)
+
+
+def _clean_message(msg, fallback):
+    """Return `msg` if it is a short, single-line, human-readable message.
+    Otherwise (tracebacks, stderr dumps, multi-line output) log the raw text to
+    the server terminal and return `fallback` for the UI."""
+    msg = (str(msg) if msg is not None else "").strip()
+    if msg and "\n" not in msg and len(msg) <= 200 and "Traceback" not in msg:
+        return msg
+    if msg:
+        _server_log(f"{fallback} Details:\n{msg}")
+    return fallback
+
+
+def _count_new_audio(dest_dir, since):
+    """How many audio files under dest_dir were written at/after `since` (epoch secs)."""
+    count = 0
+    try:
+        for root, _dirs, files in os.walk(dest_dir):
+            for fname in files:
+                if os.path.splitext(fname)[1].lower() not in AUDIO_EXTENSIONS:
+                    continue
+                try:
+                    if os.path.getmtime(os.path.join(root, fname)) >= since:
+                        count += 1
+                except OSError:
+                    pass
+    except Exception:
+        pass
+    return count
+
+
 def _cleanup_log(log_path):
     try:
         if os.path.exists(log_path):
@@ -105,15 +140,23 @@ def _parse_download_error(log_text):
         return "502 Bad Gateway: Spotify server error. Try again in a few minutes."
     if "500" in log_text and "spotify" in low:
         return "500 Internal Server Error: Spotify server error. Try again in a few minutes."
+    if "failed to download" in low or "error details" in low:
+        return "One or more tracks couldn't be downloaded from YouTube. Try again in a moment."
+    if "error downloading" in low:
+        return "One or more tracks couldn't be downloaded from Apple Music. Check your Apple Music cookies and try again."
 
     return None
 
 
 def _fail_on_returncode(download_id, returncode, log_path):
     tail = _tail_log(log_path, 40)
-    msg = _parse_download_error(tail) or f"Exit code {returncode}. Last output:\n{tail}"
+    msg = _parse_download_error(tail)
+    if not msg:
+        # Raw output stays in the server terminal; the UI only gets a plain message.
+        _server_log(f"Download {download_id} exited with code {returncode}. Last output:\n{tail}")
+        msg = "Download failed. Check the server log for details."
     downloads[download_id]["status"] = "error"
-    downloads[download_id]["error"] = msg
+    downloads[download_id]["error"] = _clean_message(msg, "Download failed. Check the server log for details.")
 
 
 def get_spotify_token():
@@ -203,7 +246,8 @@ def api_search():
         try:
             results.extend(search_apple_music(query))
         except Exception as e:
-            errors.append(f"Apple Music error: {e}")
+            _server_log(f"Apple Music search failed: {e}")
+            errors.append("Apple Music search is unavailable right now.")
 
     if platform in ("spotify", "both"):
         if not SPOTIFY_CLIENT_ID:
@@ -212,7 +256,8 @@ def api_search():
             try:
                 results.extend(search_spotify(query))
             except Exception as e:
-                errors.append(f"Spotify error: {e}")
+                _server_log(f"Spotify search failed: {e}")
+                errors.append("Spotify search is unavailable right now.")
 
     if platform == "both":
         seen = set()
@@ -232,6 +277,8 @@ def api_status():
     return jsonify({
         "apple_music": apple_music_is_configured(),
         "spotify": bool(SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET),
+        "default_save_dir": str(DOWNLOAD_DIR),
+        "home_dir": str(Path.home()),
     })
 
 
@@ -244,6 +291,29 @@ def parse_playlist_url(url):
     sp = re.search(r'open\.spotify\.com/(?:intl-[a-z]{2}/)?playlist/([A-Za-z0-9]+)', url, re.IGNORECASE)
     if sp:
         return "spotify", sp.group(1)
+    yt = re.search(r'(?:music|www|m)\.youtube\.com/(?:playlist|watch)\?[^\s#]*?\blist=([A-Za-z0-9_-]+)', url, re.IGNORECASE)
+    if yt:
+        return "youtube", yt.group(1)
+    return None, None
+
+
+def parse_song_url(url):
+    """Returns (platform, song_id) for an individual-song link, or (None, None)."""
+    url = url.strip()
+    am = re.search(r'music\.apple\.com/(?:[a-z]{2}(?:-[a-z]{2})?/)?song/(?:[^/?#\s]+/)?(\d+)', url, re.IGNORECASE)
+    if not am:
+        # An album link only identifies a single song when it carries ?i=<songId>.
+        am = re.search(r'music\.apple\.com/(?:[a-z]{2}(?:-[a-z]{2})?/)?album/[^?#\s]*\?(?:[^#\s]*&)?i=(\d+)', url, re.IGNORECASE)
+    if am:
+        return "apple", am.group(1)
+    sp = re.search(r'open\.spotify\.com/(?:intl-[a-z]{2}/)?track/([A-Za-z0-9]+)', url, re.IGNORECASE)
+    if sp:
+        return "spotify", sp.group(1)
+    yt = re.search(r'(?:music|www|m)\.youtube\.com/watch\?[^\s#]*?\bv=([A-Za-z0-9_-]{11})', url, re.IGNORECASE)
+    if not yt:
+        yt = re.search(r'youtu\.be/([A-Za-z0-9_-]{11})', url, re.IGNORECASE)
+    if yt:
+        return "youtube", yt.group(1)
     return None, None
 
 
@@ -258,7 +328,25 @@ def get_apple_music_playlist_info(playlist_id):
         if "error" in data:
             raise RuntimeError(data["error"])
         return data
-    raise RuntimeError(result.stderr.strip() or "Failed to fetch Apple Music playlist info")
+    if result.stderr.strip():
+        _server_log(f"Apple Music playlist_info stderr:\n{result.stderr.strip()}")
+    raise RuntimeError("Failed to fetch Apple Music playlist info")
+
+
+def get_youtube_playlist_info(playlist_id):
+    script = PROJECT_ROOT / "scripts" / "youtube" / "playlist_info.py"
+    result = subprocess.run(
+        [sys.executable, script, playlist_id],
+        capture_output=True, text=True, timeout=120,
+    )
+    if result.stdout.strip():
+        data = json.loads(result.stdout)
+        if "error" in data:
+            raise RuntimeError(data["error"])
+        return data
+    if result.stderr.strip():
+        _server_log(f"YouTube playlist_info stderr:\n{result.stderr.strip()}")
+    raise RuntimeError("Failed to fetch YouTube Music playlist info")
 
 
 def get_spotify_playlist_info(playlist_id):
@@ -281,11 +369,13 @@ def fetch_full_playlist_info(platform, playlist_id):
     """Returns {title, track_count, duration_ms, tracks:[{title,artist,duration_ms,...}]}."""
     if platform == "apple":
         script = PROJECT_ROOT / "scripts" / "apple" / "playlist_full.py"
+    elif platform == "youtube":
+        script = PROJECT_ROOT / "scripts" / "youtube" / "playlist_full.py"
     else:
         script = PROJECT_ROOT / "scripts" / "harmoni" / "playlist_full.py"
     result = subprocess.run(
         [sys.executable, script, playlist_id],
-        capture_output=True, text=True, timeout=60,
+        capture_output=True, text=True, timeout=120,
     )
     if result.stdout.strip():
         data = json.loads(result.stdout)
@@ -295,7 +385,9 @@ def fetch_full_playlist_info(platform, playlist_id):
         for t in data.get("tracks", []):
             t["platform"] = platform
         return data
-    raise RuntimeError(result.stderr.strip() or "Failed to fetch playlist info")
+    if result.stderr.strip():
+        _server_log(f"playlist_full stderr:\n{result.stderr.strip()}")
+    raise RuntimeError("Failed to fetch playlist info")
 
 
 def safe_playlist_name(name):
@@ -400,16 +492,61 @@ def api_playlist_info():
     url = request.args.get("url", "").strip()
     platform, playlist_id = parse_playlist_url(url)
     if not platform:
-        return jsonify({"error": "Not a valid Apple Music or Spotify playlist URL"}), 400
+        return jsonify({"error": "Not a valid Apple Music, Spotify, or YouTube Music playlist URL"}), 400
     try:
         if platform == "apple":
             info = get_apple_music_playlist_info(playlist_id)
+        elif platform == "youtube":
+            info = get_youtube_playlist_info(playlist_id)
         else:
             info = get_spotify_playlist_info(playlist_id)
         info["platform"] = platform
         return jsonify(info)
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": _clean_message(e, "Couldn't load that playlist. Check the link and try again.")}), 500
+
+
+def fetch_song_info(platform, song_id):
+    """Returns one track dict ({title, artist, album, url, duration_ms, ...}) in the
+    same shape as the entries of fetch_full_playlist_info()["tracks"]."""
+    if platform == "apple":
+        script = PROJECT_ROOT / "scripts" / "apple" / "song_full.py"
+    elif platform == "youtube":
+        script = PROJECT_ROOT / "scripts" / "youtube" / "song_full.py"
+    else:
+        script = PROJECT_ROOT / "scripts" / "harmoni" / "song_full.py"
+    result = subprocess.run(
+        [sys.executable, script, song_id],
+        capture_output=True, text=True, timeout=90,
+    )
+    if result.stdout.strip():
+        data = json.loads(result.stdout)
+        if "error" in data:
+            raise RuntimeError(data["error"])
+        data["platform"] = platform
+        return data
+    if result.stderr.strip():
+        _server_log(f"song_full stderr:\n{result.stderr.strip()}")
+    raise RuntimeError("Failed to fetch song info")
+
+
+@app.route("/api/song/info")
+def api_song_info():
+    url = request.args.get("url", "").strip()
+    platform, song_id = parse_song_url(url)
+    if not platform:
+        return jsonify({"error": "Not a valid Apple Music, Spotify, or YouTube song URL"}), 400
+    try:
+        return jsonify(fetch_song_info(platform, song_id))
+    except Exception as e:
+        return jsonify({"error": _clean_message(e, "Couldn't load that song. Check the link and try again.")}), 500
+
+
+def _harmoni_dest_args(folder):
+    """(subfolder name, root dir) as tracks_download.py expects them. An empty
+    name makes it download straight into the given folder, which works for any
+    absolute path (a playlist folder or a user-chosen song folder)."""
+    return "", str(folder)
 
 
 def download_spotify_tracks(download_id, tracks, folder, log_path):
@@ -458,7 +595,7 @@ def download_spotify_tracks(download_id, tracks, folder, log_path):
 
     if unmatched:
         harmoni_script = PROJECT_ROOT / "scripts" / "harmoni" / "tracks_download.py"
-        cmd = [sys.executable, str(harmoni_script), folder.name, str(DOWNLOAD_DIR)]
+        cmd = [sys.executable, str(harmoni_script), *_harmoni_dest_args(folder)]
         downloads[download_id]["cmd"] = " ".join(cmd)
         stdin_payload = json.dumps([
             {"artist": t["artist"], "track": t["title"], "duration_ms": t.get("duration_ms", 0)}
@@ -482,7 +619,32 @@ def download_spotify_tracks(download_id, tracks, folder, log_path):
     return returncode
 
 
-def playlist_download_worker(download_id, platform, url, playlist_id, playlist_name):
+def download_youtube_tracks(download_id, tracks, folder, log_path):
+    """Download tracks whose YouTube video is already known via the shared
+    harmoni/yt-dlp path (metadata embedding included). Returns the returncode."""
+    harmoni_script = PROJECT_ROOT / "scripts" / "harmoni" / "tracks_download.py"
+    cmd = [sys.executable, str(harmoni_script), *_harmoni_dest_args(folder)]
+    downloads[download_id]["cmd"] = " ".join(cmd)
+    payload = json.dumps([
+        {"artist": t["artist"], "track": t["title"], "duration_ms": t.get("duration_ms", 0),
+         "video_url": t["url"], "album": t.get("album", "")}
+        for t in tracks
+    ])
+    with open(log_path, "a") as log_file:
+        log_file.write(f"--- Downloading {len(tracks)} track(s) from YouTube Music ---\n")
+        log_file.flush()
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=log_file, stderr=subprocess.STDOUT, text=True)
+        downloads[download_id]["pid"] = proc.pid
+        proc.stdin.write(payload)
+        proc.stdin.close()
+        try:
+            return proc.wait(timeout=7200)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            raise
+
+
+def playlist_download_worker(download_id, platform, url, playlist_id, playlist_name, track_count=None):
     log_path = DOWNLOAD_DIR / f".dl_{download_id}.log"
     safe_name = safe_playlist_name(playlist_name)
     playlist_dir = DOWNLOAD_DIR / safe_name
@@ -491,8 +653,12 @@ def playlist_download_worker(download_id, platform, url, playlist_id, playlist_n
     proc = None
 
     try:
-        downloads[download_id]["status"] = "downloading"
         downloads[download_id]["log"] = str(log_path)
+        # Progress is derived from files appearing on disk, not from parsing the log.
+        downloads[download_id]["dest_dir"] = str(playlist_dir)
+        downloads[download_id]["total"] = track_count
+        downloads[download_id]["started_at"] = time.time()
+        downloads[download_id]["status"] = "downloading"
 
         if platform == "apple":
             cmd = [GAMDL, url, "-o", str(playlist_dir), "--config-path", GAMDL_CONFIG]
@@ -503,8 +669,12 @@ def playlist_download_worker(download_id, platform, url, playlist_id, playlist_n
                 returncode = proc.wait(timeout=7200)
         else:
             info = fetch_full_playlist_info(platform, playlist_id)
+            downloads[download_id]["total"] = len(info["tracks"])
             open(log_path, "w").close()
-            returncode = download_spotify_tracks(download_id, info["tracks"], playlist_dir, log_path)
+            if platform == "youtube":
+                returncode = download_youtube_tracks(download_id, info["tracks"], playlist_dir, log_path)
+            else:
+                returncode = download_spotify_tracks(download_id, info["tracks"], playlist_dir, log_path)
 
         if returncode == 0:
             downloads[download_id]["status"] = "done"
@@ -532,7 +702,7 @@ def playlist_download_worker(download_id, platform, url, playlist_id, playlist_n
         downloads[download_id]["error"] = "Timed out after 2 hours"
     except Exception as e:
         downloads[download_id]["status"] = "error"
-        downloads[download_id]["error"] = str(e)
+        downloads[download_id]["error"] = _clean_message(e, "Download failed. Check the server log for details.")
     finally:
         _cleanup_log(log_path)
 
@@ -555,9 +725,87 @@ def api_playlist_download():
         "platform": platform,
         "type": "playlist",
     }
+    try:
+        track_count = int(data.get("track_count") or 0) or None
+    except (TypeError, ValueError):
+        track_count = None
     thread = threading.Thread(
         target=playlist_download_worker,
-        args=(download_id, platform, url, playlist_id, playlist_name),
+        args=(download_id, platform, url, playlist_id, playlist_name, track_count),
+        daemon=True,
+    )
+    thread.start()
+    return jsonify({"download_id": download_id, "status": "queued"})
+
+
+def song_download_worker(download_id, platform, song_id, dest_dir=DOWNLOAD_DIR):
+    """Download one song by link, through the same per-track paths a playlist's
+    tracks take (Apple -> gamdl; Spotify -> Apple Music match with YouTube
+    fallback; YouTube -> yt-dlp on the known video), straight into dest_dir."""
+    log_path = DOWNLOAD_DIR / f".dl_{download_id}.log"
+    proc = None
+    try:
+        downloads[download_id]["status"] = "downloading"
+        downloads[download_id]["log"] = str(log_path)
+
+        track = fetch_song_info(platform, song_id)
+        downloads[download_id]["title"] = track["title"]
+        downloads[download_id]["artist"] = track["artist"]
+
+        if platform == "apple":
+            cmd = [GAMDL, track["url"], "-o", str(dest_dir), "--config-path", GAMDL_CONFIG]
+            downloads[download_id]["cmd"] = " ".join(cmd)
+            with open(log_path, "w") as log_file:
+                proc = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT)
+                downloads[download_id]["pid"] = proc.pid
+                returncode = proc.wait(timeout=600)
+        else:
+            open(log_path, "w").close()
+            if platform == "youtube":
+                returncode = download_youtube_tracks(download_id, [track], dest_dir, log_path)
+            else:
+                returncode = download_spotify_tracks(download_id, [track], dest_dir, log_path)
+
+        if returncode == 0:
+            downloads[download_id]["status"] = "done"
+        else:
+            _fail_on_returncode(download_id, returncode, log_path)
+    except subprocess.TimeoutExpired:
+        if proc is not None:
+            proc.kill()
+        downloads[download_id]["status"] = "error"
+        downloads[download_id]["error"] = "Timed out"
+    except Exception as e:
+        downloads[download_id]["status"] = "error"
+        downloads[download_id]["error"] = _clean_message(e, "Download failed. Check the server log for details.")
+    finally:
+        _cleanup_log(log_path)
+
+
+@app.route("/api/song/download", methods=["POST"])
+def api_song_download():
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "No data provided"}), 400
+    url = data.get("url", "").strip()
+    platform, song_id = parse_song_url(url)
+    if not platform:
+        return jsonify({"error": "Invalid song URL"}), 400
+    try:
+        dest_dir = resolve_save_dir(data.get("save_dir"))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    download_id = str(uuid.uuid4())[:8]
+    downloads[download_id] = {
+        "status": "queued",
+        "title": "Song",
+        "platform": platform,
+        "type": "song",
+    }
+    thread = threading.Thread(
+        target=song_download_worker,
+        args=(download_id, platform, song_id, dest_dir),
         daemon=True,
     )
     thread.start()
@@ -593,7 +841,7 @@ def api_playlist_view(platform, playlist_id):
             info["local_only"].append({"artist": artist, "title": title, "filename": fname})
         return jsonify(info)
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": _clean_message(e, "Couldn't load that playlist right now. Try again.")}), 500
 
 
 def update_playlist_worker(download_id, platform, playlist_id):
@@ -634,6 +882,10 @@ def update_playlist_worker(download_id, platform, playlist_id):
             downloads[download_id]["downloaded_count"] = 0
             return
 
+        downloads[download_id]["dest_dir"] = str(folder)
+        downloads[download_id]["total"] = len(to_download)
+        downloads[download_id]["started_at"] = time.time()
+
         if platform == "apple":
             cmd = [
                 GAMDL, *[t["url"] for t in to_download],
@@ -647,7 +899,10 @@ def update_playlist_worker(download_id, platform, playlist_id):
                 returncode = proc.wait(timeout=7200)
         else:
             open(log_path, "w").close()
-            returncode = download_spotify_tracks(download_id, to_download, folder, log_path)
+            if platform == "youtube":
+                returncode = download_youtube_tracks(download_id, to_download, folder, log_path)
+            else:
+                returncode = download_spotify_tracks(download_id, to_download, folder, log_path)
 
         if returncode == 0:
             downloads[download_id]["status"] = "done"
@@ -665,7 +920,7 @@ def update_playlist_worker(download_id, platform, playlist_id):
         downloads[download_id]["error"] = "Timed out after 2 hours"
     except Exception as e:
         downloads[download_id]["status"] = "error"
-        downloads[download_id]["error"] = str(e)
+        downloads[download_id]["error"] = _clean_message(e, "Update failed. Check the server log for details.")
     finally:
         _cleanup_log(log_path)
 
@@ -692,17 +947,19 @@ def api_playlist_update(platform, playlist_id):
     return jsonify({"download_id": download_id, "status": "queued"})
 
 
-def download_worker(download_id, platform, title, artist, url, duration_ms=0):
+def download_worker(download_id, platform, title, artist, url, duration_ms=0, dest_dir=DOWNLOAD_DIR):
     log_path = DOWNLOAD_DIR / f".dl_{download_id}.log"
     try:
         downloads[download_id]["status"] = "downloading"
         downloads[download_id]["log"] = str(log_path)
 
         if platform == "apple":
-            cmd = [GAMDL, url, "-o", str(DOWNLOAD_DIR), "--config-path", GAMDL_CONFIG]
+            cmd = [GAMDL, url, "-o", str(dest_dir), "--config-path", GAMDL_CONFIG]
         else:
             harmoni_script = PROJECT_ROOT / "scripts" / "harmoni" / "download.py"
-            cmd = [sys.executable, str(harmoni_script), artist, title, str(DOWNLOAD_DIR), str(duration_ms)]
+            cmd = [sys.executable, str(harmoni_script), artist, title, str(dest_dir), str(duration_ms)]
+            if platform == "youtube" and url:
+                cmd.append(url)
         downloads[download_id]["cmd"] = " ".join(cmd)
 
         with open(log_path, "w") as log_file:
@@ -720,7 +977,7 @@ def download_worker(download_id, platform, title, artist, url, duration_ms=0):
         downloads[download_id]["error"] = "Timed out after 5 minutes"
     except Exception as e:
         downloads[download_id]["status"] = "error"
-        downloads[download_id]["error"] = str(e)
+        downloads[download_id]["error"] = _clean_message(e, "Download failed. Check the server log for details.")
     finally:
         _cleanup_log(log_path)
 
@@ -739,6 +996,10 @@ def api_download():
 
     if not title or not artist:
         return jsonify({"error": "Missing title or artist"}), 400
+    try:
+        dest_dir = resolve_save_dir(data.get("save_dir"))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
 
     download_id = str(uuid.uuid4())[:8]
     downloads[download_id] = {
@@ -750,7 +1011,7 @@ def api_download():
 
     thread = threading.Thread(
         target=download_worker,
-        args=(download_id, platform, title, artist, url, duration_ms),
+        args=(download_id, platform, title, artist, url, duration_ms, dest_dir),
         daemon=True,
     )
     thread.start()
@@ -763,17 +1024,17 @@ def api_download_status(download_id):
     if download_id not in downloads:
         return jsonify({"error": "Not found"}), 404
     info = dict(downloads[download_id])
-    if info.get("status") == "downloading":
-        log_path = info.get("log", "")
-        if log_path and os.path.exists(log_path):
-            if info.get("type") == "playlist_update":
-                # Update status is a static message once downloading starts —
-                # the frontend only checks this for truthiness, so avoid reading the file.
-                info["log_tail"] = os.path.getsize(log_path) > 0
-            else:
-                info["log_tail"] = _tail_log(log_path, 5)
-    return jsonify(info)
+    # Whitelist: internals (cmd, log path, pid, raw log output) stay on the server.
+    out = {k: info[k] for k in ("status", "title", "artist", "platform", "type", "error", "downloaded_count") if k in info}
+    total = info.get("total")
+    if info.get("status") == "downloading" and total and info.get("dest_dir") and info.get("started_at"):
+        out["progress"] = {
+            "done": min(_count_new_audio(info["dest_dir"], info["started_at"]), total),
+            "total": total,
+        }
+    return jsonify(out)
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5050)
+    # Debug mode serves interactive tracebacks to the browser; opt in explicitly.
+    app.run(debug=os.environ.get("FLASK_DEBUG") == "1", port=5050)
