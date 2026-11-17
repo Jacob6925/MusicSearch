@@ -1,12 +1,13 @@
 # MusicSearch
 
-A small web app that runs on your own computer. Search Apple Music and Spotify, paste links to songs or playlists (Apple Music, Spotify, YouTube Music), and download them as audio files. It keeps a list of the playlists you've downloaded so you can re-sync them later.
+A small web app that runs on your own computer. Search Apple Music and Spotify, paste links to songs or playlists (Apple Music, Spotify, YouTube Music, YouTube), and download them as audio files. It keeps a list of the playlists you've downloaded so you can re-sync them later.
 
 Works on **Windows 10/11** and **macOS** (Intel and Apple Silicon). You don't need any programming experience: just follow the steps below in order.
 
 - Apple Music downloads use [gamdl](https://github.com/glomatico/gamdl) and need an Apple Music subscription.
 - Spotify links are matched to Apple Music (or YouTube if there is no match) using [Harmoni](https://github.com/Ssenseii/harmoni), which setup installs for you.
 - YouTube Music links work with no accounts or keys.
+- You can also download any audio straight from YouTube. You must hit the share button and copy that link, not the one from the browser.
 
 > Only download music you have the right to download. Respect the terms of the services you use.
 
@@ -102,7 +103,7 @@ When it prints **"Setup finished"** it also lists anything you still need to con
 
 ### Step 5. Add your Apple Music cookies (needed for Apple Music)
 
-Skip this step if you'll only use YouTube Music links. The app uses your logged-in Apple Music session to search and download.
+If you do not have an Apple Music subscription, skip this step. The app uses your logged-in Apple Music session to search and download.
 
 1. In Chrome, install the extension [Get cookies.txt LOCALLY](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc) (Firefox has similar add-ons).
 2. Go to [music.apple.com](https://music.apple.com) and sign in.
@@ -113,7 +114,7 @@ Cookies expire after a while. If Apple Music stops working, repeat this step wit
 
 ### Step 6. Spotify (optional)
 
-Skip this if you don't need Spotify search or Spotify links. Spotify needs its own free developer app, because each person uses their own keys:
+Skip this if you don't have a Spotify subscription. Spotify needs its own free developer app, because each person uses their own keys:
 
 1. Go to [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard), log in, and click **Create app**.
 2. Give it any name and description. In **Redirect URIs** enter exactly `http://127.0.0.1:8888/callback` and click **Add**, then tick the *Web API* box and save.
