@@ -153,6 +153,41 @@ header h1 {
     margin-bottom: 1rem;
 }
 
+.update-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    background: #1e3a5f;
+    border: 1px solid #2563eb;
+    color: #dbeafe;
+    border-radius: 8px;
+    padding: 0.65rem 1rem;
+    font-size: 0.85rem;
+    margin-bottom: 1rem;
+}
+
+.update-banner code {
+    background: rgba(0, 0, 0, 0.25);
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+}
+
+.update-banner a {
+    color: #93c5fd;
+    text-decoration: underline;
+}
+
+.update-banner button {
+    background: none;
+    border: 0;
+    color: #dbeafe;
+    font-size: 1.1rem;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 0.25rem;
+}
+
 .hidden {
     display: none !important;
 }

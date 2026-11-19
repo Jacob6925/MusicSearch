@@ -28,6 +28,7 @@ import pathsafe
 import playlist_store
 
 PROJECT_ROOT = appenv.PROJECT_ROOT
+GITHUB_REPO = "Jacob6925/MusicSearch"
 
 # Must run before anything launches a child process (UTF-8, PATH, ffmpeg).
 appenv.prepare_environment()
@@ -349,6 +350,43 @@ def api_status():
         "spotify_login": appenv.spotify_logged_in(),
         "default_save_dir": str(get_download_dir() or ""),
         "home_dir": str(Path.home()),
+    })
+
+
+def _local_commit_sha():
+    """The commit this working copy is checked out at, or None if it can't be
+    determined (git missing, not a git checkout, etc)."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=PROJECT_ROOT, capture_output=True, text=True, timeout=5,
+        )
+    except OSError:
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+@app.route("/api/version")
+def api_version():
+    local_sha = _local_commit_sha()
+    if not local_sha:
+        return jsonify({"update_available": False})
+
+    try:
+        resp = requests.get(
+            f"https://api.github.com/repos/{GITHUB_REPO}/commits/main",
+            headers={"Accept": "application/vnd.github+json"},
+            timeout=5,
+        )
+        resp.raise_for_status()
+        remote_sha = resp.json().get("sha", "")
+    except Exception as e:
+        _server_log(f"Update check failed: {e}")
+        return jsonify({"update_available": False})
+
+    return jsonify({
+        "update_available": bool(remote_sha) and remote_sha != local_sha,
+        "compare_url": f"https://github.com/{GITHUB_REPO}/compare/{local_sha}...main",
     })
 
 

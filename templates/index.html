@@ -8,6 +8,10 @@
 </head>
 <body>
     <div class="container">
+        <div id="update-banner" class="update-banner hidden">
+            <span>A new update is available. Run <code>git pull</code> to update. <a id="update-banner-link" href="#" target="_blank" rel="noopener">See what's new</a></span>
+            <button type="button" id="update-banner-dismiss" aria-label="Dismiss">&times;</button>
+        </div>
         <header>
             <h1>Music Search</h1>
             <p class="subtitle">Search Apple Music &amp; Spotify</p>
@@ -199,6 +203,23 @@
                 .catch(() => {});
         }
         loadStatusBanner();
+
+        function loadUpdateBanner() {
+            if (sessionStorage.getItem('update-banner-dismissed') === '1') return;
+            fetch('/api/version')
+                .then(r => r.json())
+                .then(info => {
+                    if (!info.update_available) return;
+                    document.getElementById('update-banner-link').href = info.compare_url || '#';
+                    document.getElementById('update-banner').classList.remove('hidden');
+                })
+                .catch(() => {});
+        }
+        document.getElementById('update-banner-dismiss').addEventListener('click', () => {
+            sessionStorage.setItem('update-banner-dismissed', '1');
+            document.getElementById('update-banner').classList.add('hidden');
+        });
+        loadUpdateBanner();
 
         searchForm.addEventListener('submit', async (e) => {
             e.preventDefault();
