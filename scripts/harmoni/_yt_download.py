@@ -4,6 +4,7 @@ directly with yt-dlp, then embeds metadata using harmoni's own metadata
 embedder so downloaded files retain the same tags harmoni would have written."""
 import asyncio
 import os
+import shutil
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -16,6 +17,9 @@ from pathsafe import safe_name
 from yt_search import find_best_match
 
 YT_DLP = [sys.executable, "-m", "yt_dlp"]
+# Resolved once, the same way app.py resolves ffmpeg_path for gamdl, instead of
+# letting subprocess search PATH (and, on Windows, the cwd) itself.
+FFPROBE = shutil.which("ffprobe") or "ffprobe"
 
 
 # YouTube is only the fallback source (Apple Music via gamdl is primary, and its
@@ -36,7 +40,7 @@ def _log_audio_info(path: str) -> None:
     """Log the codec/bitrate of the downloaded file; best-effort, never raises."""
     try:
         out = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "a:0",
+            [FFPROBE, "-v", "error", "-select_streams", "a:0",
              "-show_entries", "stream=codec_name,bit_rate", "-of", "csv=p=0", path],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
             encoding="utf-8", errors="replace", timeout=30,

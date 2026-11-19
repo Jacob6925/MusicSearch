@@ -1,7 +1,15 @@
-import json
 import os
-import re
 import sys
+
+import appenv
+
+# Must run before any third-party import: if this process wasn't started with
+# the venv's python, re-exec with it so those imports (and every child
+# process this app launches) use the venv where this project's packages live.
+appenv.reexec_in_venv()
+
+import json
+import re
 import time
 import base64
 import shutil
@@ -15,7 +23,6 @@ import requests
 from dotenv import load_dotenv
 from flask import Flask, render_template, request, jsonify
 
-import appenv
 import folder_picker
 import pathsafe
 import playlist_store

@@ -32,6 +32,25 @@ def spotify_logged_in() -> bool:
         return False
 
 
+def reexec_in_venv() -> None:
+    """If a project .venv exists and this process isn't already running its
+    interpreter, re-exec with the venv's python. Without this, starting the
+    app with a bare `python3`/`python` (system install, PyCharm's configured
+    SDK, etc.) silently runs every child process — including yt-dlp/gamdl —
+    under an interpreter that doesn't have this project's packages installed,
+    since app.py launches all of them via sys.executable."""
+    venv_dir = PROJECT_ROOT / ".venv"
+    venv_python = venv_dir / ("Scripts" if os.name == "nt" else "bin") / ("python.exe" if os.name == "nt" else "python")
+    if not venv_python.is_file():
+        return
+    try:
+        if Path(sys.executable).resolve() == venv_python.resolve():
+            return
+    except OSError:
+        return
+    os.execv(str(venv_python), [str(venv_python), *sys.argv])
+
+
 def ensure_ffmpeg() -> bool:
     """Put ffmpeg + ffprobe on PATH. Uses the system ones if present, otherwise the
     copy provided by the `static-ffmpeg` pip package (downloaded once, then cached).
