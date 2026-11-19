@@ -359,7 +359,7 @@ def _local_commit_sha():
     try:
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
-            cwd=PROJECT_ROOT, capture_output=True, text=True, timeout=5,
+            cwd=PROJECT_ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
         )
     except OSError:
         return None
